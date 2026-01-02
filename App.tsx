@@ -107,24 +107,47 @@ const App: React.FC = () => {
   };
 
   const [fcmToken, setFcmToken] = useState<string | null>(null);
+  const [isEnablingNotifications, setIsEnablingNotifications] = useState(false);
 
   const handleEnablePushNotifications = async () => {
+    setIsEnablingNotifications(true);
     try {
+      console.log("Starting notification setup...");
+      
+      if (!('Notification' in window)) {
+        alert("هذا المتصفح لا يدعم الإشعارات.");
+        return;
+      }
+      
+      console.log("Requesting permission...");
       const permission = await Notification.requestPermission();
+      console.log("Permission result:", permission);
+
       if (permission === 'granted') {
-        const token = await requestForToken();
-        if (token) {
-          console.log('%c YOUR_DEVICE_TOKEN ', 'background: #222; color: #bada55; font-size: 14px;', token);
-          setFcmToken(token);
-          await saveTokenToDatabase(state.patientId, token);
-          alert("تم تفعيل تنبيهات الهاتف بنجاح! ستصلك التذكيرات على هذا الجهاز.\n\nيمكنك الآن نسخ التوكن من قائمة الإعدادات للاختبار.");
+        try {
+          console.log("Calling requestForToken...");
+          const token = await requestForToken();
+          console.log("Token received:", token);
+          
+          if (token) {
+            setFcmToken(token);
+            await saveTokenToDatabase(state.patientId, token);
+            alert("تم تفعيل تنبيهات الهاتف بنجاح! ستصلك التذكيرات على هذا الجهاز.\n\nيمكنك الآن نسخ التوكن من قائمة الإعدادات للاختبار.");
+          } else {
+            alert("لم يتم العثور على توكن، حاول مرة أخرى.");
+          }
+        } catch (tokenError: any) {
+          console.error("Token Error Details:", tokenError);
+          alert(`فشل الحصول على التوكن:\n${tokenError.message}\n\nتأكد من:\n1. الاتصال بالإنترنت\n2. عدم تفعيل وضع التصفح الخفي\n3. (للايفون) إضافة التطبيق للشاشة الرئيسية`);
         }
       } else {
-        alert("يرجى السماح بالإشعارات من إعدادات المتصفح أولاً.");
+        alert("تم رفض الإذن بالإشعارات. يرجى تفعيلها من إعدادات المتصفح يدوياً.");
       }
-    } catch (err) {
-      console.error(err);
-      alert("حدث خطأ أثناء محاولة تفعيل التنبيهات.");
+    } catch (err: any) {
+      console.error("General Error:", err);
+      alert(`حدث خطأ غير متوقع: ${err.message || err}`);
+    } finally {
+      setIsEnablingNotifications(false);
     }
   };
 
@@ -803,8 +826,13 @@ const App: React.FC = () => {
               </div>
               
               {!state.caregiverMode && (
-                <button onClick={handleEnablePushNotifications} className="w-full py-4 bg-amber-500 text-white rounded-xl font-black text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-3">
-                  <BellRing className="w-5 h-5"/> تفعيل تنبيهات الهاتف
+                <button 
+                  onClick={handleEnablePushNotifications} 
+                  disabled={isEnablingNotifications}
+                  className={`w-full py-4 ${isEnablingNotifications ? 'bg-amber-300' : 'bg-amber-500'} text-white rounded-xl font-black text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-3`}
+                >
+                  <BellRing className={`w-5 h-5 ${isEnablingNotifications ? 'animate-pulse' : ''}`}/> 
+                  {isEnablingNotifications ? 'جاري التفعيل...' : 'تفعيل تنبيهات الهاتف'}
                 </button>
               )}
 

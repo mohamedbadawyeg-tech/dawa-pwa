@@ -1,0 +1,30 @@
+name: Caregiver Notification Trigger
+
+on:
+  repository_dispatch:
+    types: [caregiver_reminder]
+
+jobs:
+  send-notification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install Dependencies
+        run: npm install firebase-admin
+
+      - name: Create Service Account File
+        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > service-account.json
+
+      - name: Send Notification
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ./service-account.json
+          PATIENT_ID: ${{ github.event.client_payload.patientId }}
+          MED_NAME: ${{ github.event.client_payload.medName }}
+        run: node scripts/send-caregiver-notification.js

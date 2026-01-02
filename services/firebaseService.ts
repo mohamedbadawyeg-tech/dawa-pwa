@@ -36,28 +36,40 @@ try {
 }
 
 export const requestForToken = async () => {
-  if (!messaging) return null;
+  if (!messaging) {
+    console.error("Messaging is not initialized");
+    throw new Error("Firebase Messaging not initialized (Browser may not support it).");
+  }
   try {
-    const registration = await navigator.serviceWorker.getRegistration();
-    if (!registration) {
-      console.error("No service worker registration found.");
-      return null;
+    console.log("Waiting for SW ready...");
+    
+    // Explicitly wait for SW controller
+    if (!navigator.serviceWorker.controller) {
+       console.log("No controller found, waiting for registration...");
     }
 
+    const registration = await navigator.serviceWorker.ready;
+    console.log("SW Ready:", registration);
+
+    if (!registration) {
+       throw new Error("No service worker registration found after waiting.");
+    }
+
+    console.log("Requesting token...");
     const currentToken = await getToken(messaging, { 
       vapidKey: 'BN5rkFKkzuPxT7mGCq0hkUnEyODvdxuT6TI5ML33etf_SwaExFlyS5_sHNuIf0iEC-Z5B63QjPuTUusMQfjMykA',
       serviceWorkerRegistration: registration
     });
     
+    console.log("Token result:", currentToken);
+    
     if (currentToken) {
-      console.log("Device Token obtained successfully:", currentToken);
       return currentToken;
     }
-    console.log('No registration token available. Request permission to generate one.');
-    return null;
-  } catch (err) {
-    console.error('An error occurred while retrieving token. ', err);
-    return null;
+    throw new Error('No registration token available.');
+  } catch (err: any) {
+    console.error('An error occurred while retrieving token:', err);
+    throw err; 
   }
 };
 
@@ -121,6 +133,29 @@ export const sendRemoteReminder = async (patientId: string, medName: string) => 
         medName: medName
       }
     }, { merge: true });
+
+    // Trigger GitHub Action for background notification
+    const GITHUB_TOKEN = import.meta.env.VITE_GITHUB_TOKEN; // Needs to be set in .env
+    const GITHUB_OWNER = "mohamedbadawyeg-tech";
+    const GITHUB_REPO = "dawa-pwa";
+
+    if (GITHUB_TOKEN) {
+        await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/dispatches`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'Accept': 'application/vnd.github.v3+json'
+            },
+            body: JSON.stringify({
+                event_type: 'caregiver_reminder',
+                client_payload: {
+                    patientId: patientId,
+                    medName: medName
+                }
+            })
+        });
+    }
+
   } catch (error) {
     console.error("Error sending remote reminder:", error);
     throw error;
