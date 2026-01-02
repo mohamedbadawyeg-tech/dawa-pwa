@@ -1,35 +1,29 @@
-
 name: Medication Reminders Cron
 
 on:
   schedule:
-    - cron: '0 * * * *' # كل ساعة بالضبط
+    - cron: '0 * * * *' # Every hour
   workflow_dispatch:
 
 jobs:
   send-notifications:
     runs-on: ubuntu-latest
     steps:
-      - name: Send Notification via FCM
-        run: |
-          echo "Sending notification to topic all_patients..."
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "https://fcm.googleapis.com/fcm/send" \
-            -H "Authorization: key=${{ secrets.FCM_SERVER_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "to": "/topics/all_patients",
-              "notification": {
-                "title": "تذكير صحتي 💊",
-                "body": "حان موعد مراجعة أدويتك الآن. فضلاً افتح التطبيق للتأكيد.",
-                "image": "https://cdn-icons-png.flaticon.com/512/883/883356.png",
-                "click_action": "https://eladwya-92754604-eb321.web.app"
-              },
-              "priority": "high"
-            }')
-          
-          if [ "$RESPONSE" -eq 200 ]; then
-            echo "Successfully triggered FCM."
-          else
-            echo "Error: FCM returned status $RESPONSE. Check your Server Key in GitHub Secrets."
-            exit 1
-          fi
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install Dependencies
+        run: npm install firebase-admin
+
+      - name: Create Service Account File
+        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > service-account.json
+
+      - name: Send Notification
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ./service-account.json
+        run: node scripts/send-notification.js
