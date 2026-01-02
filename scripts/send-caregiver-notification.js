@@ -1,5 +1,17 @@
-const admin = require('firebase-admin');
-const serviceAccount = require(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+import admin from 'firebase-admin';
+import { readFile } from 'fs/promises';
+
+// Initialize Firebase Admin
+const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+let serviceAccount;
+
+try {
+  const fileContent = await readFile(serviceAccountPath, 'utf8');
+  serviceAccount = JSON.parse(fileContent);
+} catch (error) {
+  console.error('Failed to read service account file:', error);
+  process.exit(1);
+}
 
 if (!admin.apps.length) {
   admin.initializeApp({

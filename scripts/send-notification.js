@@ -1,32 +1,64 @@
-const admin = require('firebase-admin');
-const serviceAccount = require(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+import admin from 'firebase-admin';
+import { readFile } from 'fs/promises';
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+// Initialize Firebase Admin
+const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+let serviceAccount;
 
-const message = {
-  topic: 'all_patients',
-  notification: {
-    title: 'تذكير صحتي 💊',
-    body: 'حان موعد مراجعة أدويتك الآن. فضلاً افتح التطبيق للتأكيد.',
-  },
-  webpush: {
-    fcmOptions: {
-      link: 'https://eladwya-92754604-eb321.web.app'
-    },
-    notification: {
-      icon: 'https://cdn-icons-png.flaticon.com/512/883/883356.png'
+try {
+  const fileContent = await readFile(serviceAccountPath, 'utf8');
+  serviceAccount = JSON.parse(fileContent);
+} catch (error) {
+  console.error('Failed to read service account file:', error);
+  process.exit(1);
+}
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+}
+
+async function send() {
+  const db = admin.firestore();
+  
+  // Get all patients
+  const patientsSnapshot = await db.collection('patients').get();
+  
+  const now = new Date();
+  const currentHour = now.getHours();
+  const currentMinute = now.getMinutes();
+
+  for (const doc of patientsSnapshot.docs) {
+    const patientData = doc.data();
+    const patientId = doc.id;
+
+    // Check medications
+    if (patientData.medications) {
+      for (const med of patientData.medications) {
+        // Parse time (e.g., "14:30")
+        const [hour, minute] = med.time.split(':').map(Number);
+        
+        // Check if it's time (within last 15 mins to be safe)
+        if (hour === currentHour && Math.abs(minute - currentMinute) < 15) {
+             const tokenDoc = await db.collection('tokens').doc(patientId).get();
+             if (tokenDoc.exists && tokenDoc.data().fcmToken) {
+                 const token = tokenDoc.data().fcmToken;
+                 const payload = {
+                    token: token,
+                    notification: {
+                        title: 'وقت الدواء 💊',
+                        body: `حان موعد أخذ دواء: ${med.name}`
+                    }
+                 };
+                 await admin.messaging().send(payload);
+                 console.log(`Sent reminder for ${med.name} to ${patientData.name}`);
+             }
+        }
+      }
     }
   }
-};
+  process.exit(0);
+}
 
-admin.messaging().send(message)
-  .then((response) => {
-    console.log('Successfully sent message:', response);
-    process.exit(0);
-  })
-  .catch((error) => {
-    console.log('Error sending message:', error);
-    process.exit(1);
-  });
+send();
