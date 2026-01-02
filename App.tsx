@@ -175,10 +175,11 @@ const App: React.FC = () => {
     if (!state.caregiverMode) {
       // Use local random tips for instant variety on every load/refresh
       const randomTip = DAILY_TIPS[Math.floor(Math.random() * DAILY_TIPS.length)];
-      setState(prev => ({ ...prev, dailyTipContent: randomTip }));
+      const personalizedTip = randomTip.replace('{name}', state.patientName || "حاج/ة");
+      setState(prev => ({ ...prev, dailyTipContent: personalizedTip }));
       isDirty.current = true;
     }
-  }, [state.caregiverMode]);
+  }, [state.caregiverMode, state.patientName]);
 
   useEffect(() => { fetchDailyTip(); }, []);
 
