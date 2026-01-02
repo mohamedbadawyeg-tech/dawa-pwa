@@ -1,0 +1,29 @@
+name: Hourly Health Tips
+
+on:
+  schedule:
+    - cron: '0 * * * *' # Runs every hour
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  send-tips:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      - name: Install Dependencies
+        run: npm ci
+        
+      - name: Create Service Account File
+        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > service-account.json
+        
+      - name: Send Hourly Tip
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ./service-account.json
+        run: node scripts/send-hourly-tip.js

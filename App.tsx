@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { MEDICATIONS as DEFAULT_MEDICATIONS, TIME_SLOT_CONFIG, SLOT_HOURS, SYMPTOMS, CATEGORY_COLORS, MEDICAL_HISTORY_SUMMARY, DIET_GUIDELINES } from './constants';
+import { MEDICATIONS as DEFAULT_MEDICATIONS, TIME_SLOT_CONFIG, SLOT_HOURS, SYMPTOMS, CATEGORY_COLORS, MEDICAL_HISTORY_SUMMARY, DIET_GUIDELINES, DAILY_TIPS } from './constants';
 import { AppState, TimeSlot, AIAnalysisResult, HealthReport, Medication, DayHistory } from './types';
 import { analyzeHealthStatus, generateDailyHealthTip } from './services/geminiService';
 import { speakText, stopSpeech, playChime } from './services/audioService';
@@ -19,7 +19,7 @@ import {
   Stethoscope as DoctorIcon, AlertTriangle, UserCog, Copy, Cloud, Smile, 
   Droplets, ChevronLeft, ChevronRight, FileText, Sparkles, Moon, Sun, 
   Utensils, Minus, Zap, Bell, UtensilsCrossed, Check, Stars, Frown, Meh, ListTodo, Info, History,
-  Wifi, WifiOff, Coffee, Brain, Edit3, Trash2, BellRing
+  Wifi, WifiOff, Coffee, Brain, Edit3, Trash2, BellRing, Pill, XCircle
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -87,6 +87,26 @@ const App: React.FC = () => {
   const [isFetchingTip, setIsFetchingTip] = useState(false);
 
   useEffect(() => {
+    // Check for "speak" query param (from notification click)
+    const params = new URLSearchParams(window.location.search);
+    const speakBody = params.get('speak');
+    
+    if (speakBody) {
+      // Remove the param from URL without reloading
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
+      
+      // Wait a bit for user interaction/focus then speak
+      setTimeout(async () => {
+        if (!isMuted) {
+          await playChime();
+          speakText(speakBody);
+        }
+      }, 1000);
+    }
+  }, [isMuted]);
+
+  useEffect(() => {
     const root = window.document.documentElement;
     if (state.darkMode) root.classList.add('dark');
     else root.classList.remove('dark');
@@ -152,16 +172,13 @@ const App: React.FC = () => {
   };
 
   const fetchDailyTip = useCallback(async (force = false) => {
-    if (!state.caregiverMode && (force || state.lastDailyTipDate !== today)) {
-      setIsFetchingTip(true);
-      try {
-        const tip = await generateDailyHealthTip(state);
-        setState(prev => ({ ...prev, lastDailyTipDate: today, dailyTipContent: tip }));
-        isDirty.current = true;
-      } catch (e) { console.error(e); }
-      finally { setIsFetchingTip(false); }
+    if (!state.caregiverMode) {
+      // Use local random tips for instant variety on every load/refresh
+      const randomTip = DAILY_TIPS[Math.floor(Math.random() * DAILY_TIPS.length)];
+      setState(prev => ({ ...prev, dailyTipContent: randomTip }));
+      isDirty.current = true;
     }
-  }, [state, today]);
+  }, [state.caregiverMode]);
 
   useEffect(() => { fetchDailyTip(); }, []);
 
@@ -236,14 +253,19 @@ const App: React.FC = () => {
     const unsubscribe = onForegroundMessage((payload) => {
       console.log('Foreground message received:', payload);
       const { title, body } = payload.notification || {};
+      const isTip = payload.data?.type === 'tip';
+
       if (title && body) {
         if (Notification.permission === 'granted') {
            new Notification(title, { 
              body, 
-             icon: 'https://cdn-icons-png.flaticon.com/512/883/883356.png' 
+             icon: 'https://cdn-icons-png.flaticon.com/512/883/883356.png',
+             silent: isTip // Try to silence system notification if supported
            });
         }
-        if (!isMuted) {
+        
+        // Only play sound and speak if it's NOT a tip
+        if (!isMuted && !isTip) {
           playChime();
           speakText(body);
         }
@@ -351,7 +373,7 @@ const App: React.FC = () => {
   const progress = state.medications.length > 0 ? (Object.values(state.takenMedications).filter(Boolean).length / state.medications.length) * 100 : 0;
 
   const getMedCardStyle = (med: Medication, isTaken: boolean, isLate: boolean) => {
-    if (isTaken) return 'bg-slate-100/50 dark:bg-slate-800/40 border-transparent opacity-60 grayscale scale-[0.98]';
+    if (isTaken) return 'bg-emerald-100 dark:bg-emerald-900/40 border-emerald-200 dark:border-emerald-800 opacity-90 scale-[0.98]';
     if (isLate) return 'late-med-alert border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 shake-on-late';
     
     switch(med.category) {
@@ -376,8 +398,21 @@ const App: React.FC = () => {
               <div className="text-right">
                 <h1 className="text-2xl font-black dark:text-white leading-tight tracking-tight">{state.patientName}</h1>
                 <div className="flex items-center gap-2 mt-1">
-                  <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-full text-[9px] font-black text-slate-500 border dark:border-slate-700 uppercase">
-                    كود المريض: {state.caregiverMode ? state.caregiverTargetId : state.patientId}
+                  <span className="px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded-full text-xs font-black text-slate-500 border dark:border-slate-700 uppercase flex items-center gap-2">
+                    كود المريض: <span className="text-sm font-bold text-slate-700 dark:text-slate-300">{state.caregiverMode ? state.caregiverTargetId : state.patientId}</span>
+                    <button 
+                      onClick={() => { 
+                        const id = state.caregiverMode ? state.caregiverTargetId : state.patientId;
+                        if (id) {
+                          navigator.clipboard.writeText(id); 
+                          alert('تم نسخ الكود: ' + id);
+                        }
+                      }} 
+                      className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md transition-colors text-blue-600"
+                      title="نسخ الكود"
+                    >
+                      <Copy className="w-3.5 h-3.5"/>
+                    </button>
                   </span>
                   {isSyncing ? <Cloud className="w-3.5 h-3.5 text-blue-500 animate-bounce" /> : <CheckCircle className={`w-3.5 h-3.5 text-emerald-500`} />}
                   {isOnline ? <Wifi className="w-3.5 h-3.5 text-emerald-500" /> : <WifiOff className="w-3.5 h-3.5 text-red-500" />}
@@ -895,6 +930,123 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+
+      {selectedHistoryDate && (
+        <div className="fixed inset-0 z-[200] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+           <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[2.5rem] p-8 max-h-[90vh] overflow-y-auto text-right animate-in zoom-in-95 custom-scrollbar">
+              <div className="flex justify-between items-center mb-6 border-b dark:border-slate-800 pb-4">
+                 <button onClick={() => setSelectedHistoryDate(null)} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl"><X className="w-6 h-6"/></button>
+                 <div>
+                    <h2 className="text-2xl font-black dark:text-white">تفاصيل اليوم</h2>
+                    <p className="text-sm font-bold text-slate-400 mt-1">{new Date(selectedHistoryDate).toLocaleDateString('ar-EG', {weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'})}</p>
+                 </div>
+              </div>
+
+              {/* Medications Section */}
+              <div className="mb-8">
+                 <h3 className="font-black text-lg mb-4 flex items-center justify-end gap-2 dark:text-white">
+                    الأدوية
+                    <span className="p-2 bg-blue-50 dark:bg-blue-900/30 rounded-lg"><Pill className="w-5 h-5 text-blue-500"/></span>
+                 </h3>
+                 <div className="space-y-3">
+                    {state.medications.map(med => {
+                      const dayData = state.dailyReports[selectedHistoryDate];
+                      const isTaken = dayData?.takenMedications?.[med.id];
+                      return (
+                        <div key={med.id} className={`p-4 rounded-2xl border-2 flex items-center justify-between ${isTaken ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-100 dark:border-emerald-800/50' : 'bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-800'}`}>
+                           <div className="flex items-center gap-3">
+                              {isTaken ? <CheckCircle className="w-6 h-6 text-emerald-500"/> : <XCircle className="w-6 h-6 text-slate-300"/>}
+                              <span className={`text-sm font-bold ${isTaken ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400'}`}>{isTaken ? 'تم أخذ الدواء' : 'لم يتم التسجيل'}</span>
+                           </div>
+                           <div className="text-right">
+                              <h4 className={`font-black ${isTaken ? 'text-emerald-900 dark:text-emerald-100' : 'text-slate-700 dark:text-slate-300'}`}>{med.name}</h4>
+                              <p className="text-[10px] font-bold text-slate-400 mt-1">{med.dosage}</p>
+                           </div>
+                        </div>
+                      );
+                    })}
+                 </div>
+              </div>
+
+              {/* Vitals Section */}
+              {state.dailyReports[selectedHistoryDate]?.report && (
+                 <div>
+                    <h3 className="font-black text-lg mb-4 flex items-center justify-end gap-2 dark:text-white">
+                       المؤشرات الحيوية
+                       <span className="p-2 bg-rose-50 dark:bg-rose-900/30 rounded-lg"><Activity className="w-5 h-5 text-rose-500"/></span>
+                    </h3>
+                    <div className="grid grid-cols-2 gap-3">
+                       {state.dailyReports[selectedHistoryDate].report.systolicBP && (
+                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
+                            <span className="text-[10px] font-black text-slate-400 block mb-1">الضغط</span>
+                            <p className="text-xl font-black text-slate-700 dark:text-slate-200">{state.dailyReports[selectedHistoryDate].report.systolicBP}/{state.dailyReports[selectedHistoryDate].report.diastolicBP}</p>
+                         </div>
+                       )}
+                       {state.dailyReports[selectedHistoryDate].report.bloodSugar && (
+                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
+                            <span className="text-[10px] font-black text-slate-400 block mb-1">السكر</span>
+                            <p className="text-xl font-black text-blue-600 dark:text-blue-400">{state.dailyReports[selectedHistoryDate].report.bloodSugar}</p>
+                         </div>
+                       )}
+                       {state.dailyReports[selectedHistoryDate].report.oxygenLevel && (
+                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
+                            <span className="text-[10px] font-black text-slate-400 block mb-1">الأكسجين</span>
+                            <p className="text-xl font-black text-emerald-600 dark:text-emerald-400">{state.dailyReports[selectedHistoryDate].report.oxygenLevel}%</p>
+                         </div>
+                       )}
+                       {state.dailyReports[selectedHistoryDate].report.heartRate && (
+                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
+                            <span className="text-[10px] font-black text-slate-400 block mb-1">النبض</span>
+                            <p className="text-xl font-black text-rose-600 dark:text-rose-400">{state.dailyReports[selectedHistoryDate].report.heartRate}</p>
+                         </div>
+                       )}
+                    </div>
+
+                    {/* Symptoms & Mood */}
+                    <div className="mt-4 space-y-3">
+                       {state.dailyReports[selectedHistoryDate].report.symptoms && state.dailyReports[selectedHistoryDate].report.symptoms.length > 0 && (
+                          <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-right">
+                             <span className="text-[10px] font-black text-slate-400 block mb-2">الأعراض</span>
+                             <div className="flex flex-wrap justify-end gap-2">
+                                {state.dailyReports[selectedHistoryDate].report.symptoms.map((s, i) => (
+                                   <span key={i} className="px-3 py-1 bg-white dark:bg-slate-700 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 shadow-sm border border-slate-100 dark:border-slate-600">{s}</span>
+                                ))}
+                             </div>
+                          </div>
+                       )}
+                       
+                       <div className="grid grid-cols-2 gap-3">
+                          {state.dailyReports[selectedHistoryDate].report.mood && (
+                             <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
+                                <span className="text-[10px] font-black text-slate-400 block mb-1">المزاج</span>
+                                <p className="text-sm font-black text-slate-700 dark:text-slate-300">{state.dailyReports[selectedHistoryDate].report.mood}</p>
+                             </div>
+                          )}
+                          {state.dailyReports[selectedHistoryDate].report.sleepQuality && (
+                             <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
+                                <span className="text-[10px] font-black text-slate-400 block mb-1">النوم</span>
+                                <p className="text-sm font-black text-slate-700 dark:text-slate-300">{state.dailyReports[selectedHistoryDate].report.sleepQuality}</p>
+                             </div>
+                          )}
+                       </div>
+                    </div>
+                 </div>
+              )}
+              
+              {!state.dailyReports[selectedHistoryDate]?.report && !state.dailyReports[selectedHistoryDate]?.takenMedications && (
+                 <div className="text-center py-12">
+                    <div className="w-16 h-16 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-4">
+                       <FileText className="w-8 h-8 text-slate-300"/>
+                    </div>
+                    <p className="text-slate-400 font-bold">لا توجد بيانات مسجلة لهذا اليوم</p>
+                 </div>
+              )}
+
+              <button onClick={() => setSelectedHistoryDate(null)} className="w-full mt-8 py-5 bg-slate-900 dark:bg-slate-800 text-white rounded-[1.5rem] font-black text-lg shadow-xl active:scale-95 transition-all">إغلاق</button>
+           </div>
+        </div>
+      )}
+
     </div>
   );
 };
