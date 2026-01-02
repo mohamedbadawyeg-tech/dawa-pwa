@@ -34,26 +34,36 @@ async function send() {
     const patientId = doc.id;
 
     // Check medications
-    if (patientData.medications) {
+    if (patientData.medications && Array.isArray(patientData.medications)) {
       for (const med of patientData.medications) {
-        // Parse time (e.g., "14:30")
-        const [hour, minute] = med.time.split(':').map(Number);
-        
-        // Check if it's time (within last 15 mins to be safe)
-        if (hour === currentHour && Math.abs(minute - currentMinute) < 15) {
-             const tokenDoc = await db.collection('tokens').doc(patientId).get();
-             if (tokenDoc.exists && tokenDoc.data().fcmToken) {
-                 const token = tokenDoc.data().fcmToken;
-                 const payload = {
-                    token: token,
-                    notification: {
-                        title: 'وقت الدواء 💊',
-                        body: `حان موعد أخذ دواء: ${med.name}`
-                    }
-                 };
-                 await admin.messaging().send(payload);
-                 console.log(`Sent reminder for ${med.name} to ${patientData.name}`);
-             }
+        // Skip if time is missing
+        if (!med.time) {
+          console.warn(`Skipping medication ${med.name || 'unknown'} for patient ${patientId}: Missing time`);
+          continue;
+        }
+
+        try {
+            // Parse time (e.g., "14:30")
+            const [hour, minute] = med.time.split(':').map(Number);
+            
+            // Check if it's time (within last 15 mins to be safe)
+            if (hour === currentHour && Math.abs(minute - currentMinute) < 15) {
+                const tokenDoc = await db.collection('tokens').doc(patientId).get();
+                if (tokenDoc.exists && tokenDoc.data().fcmToken) {
+                    const token = tokenDoc.data().fcmToken;
+                    const payload = {
+                        token: token,
+                        notification: {
+                            title: 'وقت الدواء 💊',
+                            body: `حان موعد أخذ دواء: ${med.name}`
+                        }
+                    };
+                    await admin.messaging().send(payload);
+                    console.log(`Sent reminder for ${med.name} to ${patientData.name}`);
+                }
+            }
+        } catch (err) {
+            console.error(`Error processing medication for patient ${patientId}:`, err);
         }
       }
     }
