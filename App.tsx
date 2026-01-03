@@ -20,7 +20,7 @@ import {
   Stethoscope as DoctorIcon, AlertTriangle, UserCog, Copy, Cloud, Smile, 
   Droplets, ChevronLeft, ChevronRight, FileText, Sparkles, Moon, Sun, 
   Utensils, Minus, Zap, Bell, UtensilsCrossed, Check, Stars, Frown, Meh, ListTodo, Info, History,
-  Wifi, WifiOff, Coffee, Brain, Edit3, Trash2, BellRing, Pill, XCircle, ThumbsUp, Share2
+  Wifi, WifiOff, Coffee, Brain, Edit3, Trash2, BellRing, Pill, XCircle, ThumbsUp, Share2, Package
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -675,7 +675,10 @@ const App: React.FC = () => {
                                       <button onClick={() => deleteMedication(med.id)} className="p-3 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-all"><Trash2 className="w-4 h-4"/></button>
                                    </div>
                                  ) : (
-                                   <button onClick={() => { setSelectedMed(med); setActiveModal('medDetail'); }} className="p-3 text-slate-400 hover:text-blue-500 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-all"><Info className="w-5 h-5"/></button>
+                                   <div className="flex flex-col gap-1">
+                                      <button onClick={() => { setSelectedMed(med); setActiveModal('medDetail'); }} className="p-3 text-slate-400 hover:text-blue-500 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-all"><Info className="w-5 h-5"/></button>
+                                      <button onClick={() => { setEditingMed(med); setActiveModal('medEditor'); }} className="p-3 text-emerald-500 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded-lg transition-all" title={t('stock')}><Package className="w-5 h-5"/></button>
+                                   </div>
                                  )}
                                  {state.caregiverMode && <button onClick={() => sendRemoteReminder(state.caregiverTargetId!, med.name)} className="p-3 text-amber-500 hover:bg-amber-100 dark:hover:bg-amber-900/30 rounded-lg transition-all"><Bell className="w-5 h-5"/></button>}
                                </div>
@@ -984,12 +987,12 @@ const App: React.FC = () => {
               
               <div className="space-y-2">
                 <label className="text-[10px] font-black text-slate-400 pr-1">{t('medicationName')}</label>
-                <input type="text" value={editingMed.name || ''} onChange={e => setEditingMed({...editingMed, name: e.target.value})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
+                <input disabled={!state.caregiverMode} type="text" value={editingMed.name || ''} onChange={e => setEditingMed({...editingMed, name: e.target.value})} className={`w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner ${!state.caregiverMode ? 'opacity-50 cursor-not-allowed' : ''}`}/>
               </div>
 
               <div className="space-y-2">
                 <label className="text-[10px] font-black text-slate-400 pr-1">{t('dosage')}</label>
-                <input type="text" value={editingMed.dosage || ''} onChange={e => setEditingMed({...editingMed, dosage: e.target.value})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
+                <input disabled={!state.caregiverMode} type="text" value={editingMed.dosage || ''} onChange={e => setEditingMed({...editingMed, dosage: e.target.value})} className={`w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner ${!state.caregiverMode ? 'opacity-50 cursor-not-allowed' : ''}`}/>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -1005,7 +1008,7 @@ const App: React.FC = () => {
 
               <div className="space-y-2">
                 <label className="text-[10px] font-black text-slate-400 pr-1">موعد التناول</label>
-                <select value={editingMed.timeSlot} onChange={e => setEditingMed({...editingMed, timeSlot: e.target.value as TimeSlot})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner">
+                <select disabled={!state.caregiverMode} value={editingMed.timeSlot} onChange={e => setEditingMed({...editingMed, timeSlot: e.target.value as TimeSlot})} className={`w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner ${!state.caregiverMode ? 'opacity-50 cursor-not-allowed' : ''}`}>
                    {(Object.keys(TIME_SLOT_CONFIG) as TimeSlot[]).map(slot => (
                      <option key={slot} value={slot}>{TIME_SLOT_CONFIG[slot].label}</option>
                    ))}
@@ -1014,7 +1017,7 @@ const App: React.FC = () => {
 
               <div className="space-y-2">
                 <label className="text-[10px] font-black text-slate-400 pr-1">{t('timeClock')}</label>
-               <input type="text" placeholder={t('timePlaceholder')} value={editingMed.frequencyLabel || ''} onChange={e => setEditingMed({...editingMed, frequencyLabel: e.target.value})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
+               <input disabled={!state.caregiverMode} type="text" placeholder={t('timePlaceholder')} value={editingMed.frequencyLabel || ''} onChange={e => setEditingMed({...editingMed, frequencyLabel: e.target.value})} className={`w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner ${!state.caregiverMode ? 'opacity-50 cursor-not-allowed' : ''}`}/>
               </div>
 
               <button onClick={() => saveMedication(editingMed)} className="w-full py-5 bg-blue-600 text-white rounded-[1.2rem] font-black text-lg shadow-xl active:scale-95 transition-all">{t('save')}</button>
