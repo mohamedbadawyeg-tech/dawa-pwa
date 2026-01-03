@@ -55,12 +55,43 @@ export const speakText = async (text: string) => {
 
 const fallbackSpeak = (text: string): Promise<void> => {
   return new Promise((resolve) => {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'ar-SA';
-    utterance.rate = 0.9;
-    utterance.onend = () => resolve();
-    utterance.onerror = () => resolve();
-    window.speechSynthesis.speak(utterance);
+    // Ensure voices are loaded
+    const speak = () => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      const voices = window.speechSynthesis.getVoices();
+      
+      // Prioritize Arabic voices, especially Egyptian or Google ones for better quality
+      const allVoices = voices.filter(v => v.lang.includes('ar'));
+      console.log('Available Arabic voices:', allVoices.map(v => `${v.name} (${v.lang})`));
+
+      const arabicVoice = voices.find(v => v.lang.includes('ar-EG') && v.name.includes('Google')) ||
+                          voices.find(v => v.lang.includes('ar-EG')) ||
+                          voices.find(v => v.lang.includes('ar-SA') && v.name.includes('Google')) ||
+                          voices.find(v => v.lang.includes('ar') && v.name.includes('Google')) ||
+                          voices.find(v => v.lang.includes('ar'));
+
+      if (arabicVoice) {
+        console.log('Selected voice:', arabicVoice.name);
+        utterance.voice = arabicVoice;
+        utterance.lang = arabicVoice.lang;
+      } else {
+        console.log('No specific Arabic voice found, using default ar-EG');
+        utterance.lang = 'ar-EG'; // Fallback to asking for Egyptian
+      }
+
+      utterance.rate = 0.85; // Slightly slower for better clarity
+      utterance.pitch = 1.0;
+      
+      utterance.onend = () => resolve();
+      utterance.onerror = () => resolve();
+      window.speechSynthesis.speak(utterance);
+    };
+
+    if (window.speechSynthesis.getVoices().length === 0) {
+      window.speechSynthesis.onvoiceschanged = speak;
+    } else {
+      speak();
+    }
   });
 };
 
@@ -74,16 +105,17 @@ const processQueue = async () => {
   const text = speechQueue.shift()!;
   
   try {
-    if (!process.env.API_KEY) throw new Error("No API Key");
+    const apiKey = process.env.API_KEY || localStorage.getItem('gemini_api_key');
+    if (!apiKey) throw new Error("No API Key");
 
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: `بصوت واضح ومريح: ${text}` }] }],
+      model: "gemini-2.0-flash-exp",
+      contents: [{ parts: [{ text: text }] }],
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Fenrir' } },
         },
       },
     });

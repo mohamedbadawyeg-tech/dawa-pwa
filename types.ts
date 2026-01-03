@@ -18,7 +18,15 @@ export interface Medication {
   isCritical: boolean;
   frequencyLabel: string;
   category?: 'pressure' | 'diabetes' | 'blood-thinner' | 'antibiotic' | 'stomach' | 'other';
-  sideEffects?: string[]; 
+  sideEffects?: string[];
+  stock?: number;
+  lowStockThreshold?: number; 
+  // English fields
+  nameEn?: string;
+  dosageEn?: string;
+  notesEn?: string;
+  frequencyLabelEn?: string;
+  sideEffectsEn?: string[];
 }
 
 export interface HealthReport {
@@ -74,10 +82,10 @@ export interface AppState {
     timestamp: number;
     medName: string;
   };
+  language?: 'ar' | 'en';
 }
 
 export interface AIAnalysisResult {
-  summary: string;
   recommendations: string[];
   warnings: string[];
   positivePoints: string[];

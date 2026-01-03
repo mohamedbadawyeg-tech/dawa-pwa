@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { MEDICATIONS as DEFAULT_MEDICATIONS, TIME_SLOT_CONFIG, SLOT_HOURS, SYMPTOMS, CATEGORY_COLORS, MEDICAL_HISTORY_SUMMARY, DIET_GUIDELINES, DAILY_TIPS } from './constants';
 import { AppState, TimeSlot, AIAnalysisResult, HealthReport, Medication, DayHistory } from './types';
-import { analyzeHealthStatus, generateDailyHealthTip } from './services/geminiService';
+import { TRANSLATIONS, Language, TranslationKey } from './translations';
+import { analyzeHealthStatus, generateDailyHealthTip, getMedicationDetails, generateReminderMessage } from './services/geminiService';
 import { speakText, stopSpeech, playChime } from './services/audioService';
 import { 
   syncPatientData, 
@@ -19,12 +20,20 @@ import {
   Stethoscope as DoctorIcon, AlertTriangle, UserCog, Copy, Cloud, Smile, 
   Droplets, ChevronLeft, ChevronRight, FileText, Sparkles, Moon, Sun, 
   Utensils, Minus, Zap, Bell, UtensilsCrossed, Check, Stars, Frown, Meh, ListTodo, Info, History,
-  Wifi, WifiOff, Coffee, Brain, Edit3, Trash2, BellRing, Pill, XCircle
+  Wifi, WifiOff, Coffee, Brain, Edit3, Trash2, BellRing, Pill, XCircle, ThumbsUp, Share2
 } from 'lucide-react';
 
 const App: React.FC = () => {
-  const today = new Date().toISOString().split('T')[0];
   const [now, setNow] = useState(new Date());
+  
+  // 1. Reset and save status everyday at 3 am (Business Day Logic)
+  const getBusinessDate = (date: Date) => {
+    const d = new Date(date);
+    if (d.getHours() < 3) d.setDate(d.getDate() - 1);
+    return d.toISOString().split('T')[0];
+  };
+  const today = getBusinessDate(now);
+
   const [calendarViewDate, setCalendarViewDate] = useState(new Date());
   const [isSyncing, setIsSyncing] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -40,10 +49,24 @@ const App: React.FC = () => {
       try {
         const parsed = JSON.parse(saved);
         const isSameDay = parsed.currentReport?.date === today;
+        
+        // Ensure we archive the previous day's report if the day has changed while app was closed
+        let initialDailyReports = parsed.dailyReports || {};
+        if (!isSameDay && parsed.currentReport) {
+           initialDailyReports = {
+             ...initialDailyReports,
+             [parsed.currentReport.date]: {
+               report: parsed.currentReport,
+               takenMedications: parsed.takenMedications || {}
+             }
+           };
+        }
+
         return {
           ...parsed,
           patientId: parsed.patientId || generateSyncId(),
           history: parsed.history || [],
+          dailyReports: initialDailyReports,
           takenMedications: isSameDay ? (parsed.takenMedications || {}) : {},
           sentNotifications: isSameDay ? (parsed.sentNotifications || []) : [],
           currentReport: isSameDay ? parsed.currentReport : {
@@ -55,7 +78,7 @@ const App: React.FC = () => {
       } catch (e) { console.error(e); }
     }
     return {
-      patientName: "الحاج ممدوح عبد العال",
+      patientName: TRANSLATIONS.ar.defaultPatientName,
       patientAge: 75,
       patientId: generateSyncId(),
       caregiverMode: false,
@@ -63,12 +86,13 @@ const App: React.FC = () => {
       medications: DEFAULT_MEDICATIONS,
       medicalHistorySummary: MEDICAL_HISTORY_SUMMARY,
       dietGuidelines: DIET_GUIDELINES,
-      upcomingProcedures: "لا توجد إجراءات مسجلة حالياً.",
+      upcomingProcedures: TRANSLATIONS.ar.noUpcomingProcedures,
       takenMedications: {},
       notificationsEnabled: true,
       sentNotifications: [],
       customReminderTimes: {},
       darkMode: false,
+      language: 'ar',
       history: [],
       dailyReports: {},
       currentReport: {
@@ -82,7 +106,30 @@ const App: React.FC = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [activeModal, setActiveModal] = useState<'settings' | 'report' | 'calendar' | 'summary' | 'diet' | 'procedures' | 'medDetail' | 'history' | 'medEditor' | null>(null);
   const [selectedMed, setSelectedMed] = useState<Medication | null>(null);
+  const [medDetails, setMedDetails] = useState<{sideEffects: string[], warnings: string[]} | null>(null);
+  const [isLoadingMedDetails, setIsLoadingMedDetails] = useState(false);
   const [editingMed, setEditingMed] = useState<Partial<Medication> | null>(null);
+
+  const t = (key: TranslationKey) => {
+    const lang = state.language || 'ar';
+    return TRANSLATIONS[lang][key] || TRANSLATIONS['ar'][key];
+  };
+
+  const isRtl = (state.language || 'ar') === 'ar';
+
+  useEffect(() => {
+    if (activeModal === 'medDetail' && selectedMed) {
+      setMedDetails(null);
+      setIsLoadingMedDetails(true);
+      const prompt = t('patientSummary')
+        .replace('{age}', state.patientAge.toString())
+        .replace('{history}', state.medicalHistorySummary);
+      getMedicationDetails(selectedMed.name, prompt)
+        .then(details => setMedDetails(details))
+        .catch(err => console.error(err))
+        .finally(() => setIsLoadingMedDetails(false));
+    }
+  }, [activeModal, selectedMed]);
   const [selectedHistoryDate, setSelectedHistoryDate] = useState<string | null>(null);
   const [isFetchingTip, setIsFetchingTip] = useState(false);
 
@@ -110,8 +157,49 @@ const App: React.FC = () => {
     const root = window.document.documentElement;
     if (state.darkMode) root.classList.add('dark');
     else root.classList.remove('dark');
+    
+    root.dir = isRtl ? 'rtl' : 'ltr';
+    root.lang = isRtl ? 'ar' : 'en';
+
     localStorage.setItem('health_track_final_v2', JSON.stringify(state));
   }, [state]);
+
+  // Handle Business Day Reset (3 AM)
+  useEffect(() => {
+    if (state.currentReport.date !== today) {
+      setState(prev => {
+        const prevDate = prev.currentReport.date;
+        return {
+          ...prev,
+          dailyReports: {
+            ...prev.dailyReports,
+            [prevDate]: {
+              report: prev.currentReport,
+              takenMedications: prev.takenMedications
+            }
+          },
+          currentReport: {
+            date: today,
+            healthRating: 0,
+            painLevel: 0,
+            sleepQuality: '',
+            appetite: '',
+            symptoms: [],
+            notes: '',
+            systolicBP: 0,
+            diastolicBP: 0,
+            bloodSugar: 0,
+            oxygenLevel: 0,
+            heartRate: 0,
+            mood: '',
+            waterIntake: 0
+          },
+          takenMedications: {},
+          sentNotifications: []
+        };
+      });
+    }
+  }, [today, state.currentReport.date]);
 
   const addHistoryAction = (action: string, details: string) => {
     const entry = {
@@ -135,7 +223,7 @@ const App: React.FC = () => {
       console.log("Starting notification setup...");
       
       if (!('Notification' in window)) {
-        alert("هذا المتصفح لا يدعم الإشعارات.");
+        alert(t('browserNotSupportNotifications'));
         return;
       }
       
@@ -152,20 +240,20 @@ const App: React.FC = () => {
           if (token) {
             setFcmToken(token);
             await saveTokenToDatabase(state.patientId, token);
-            alert("تم تفعيل تنبيهات الهاتف بنجاح! ستصلك التذكيرات على هذا الجهاز.\n\nيمكنك الآن نسخ التوكن من قائمة الإعدادات للاختبار.");
+            alert(t('notificationsActivated'));
           } else {
-            alert("لم يتم العثور على توكن، حاول مرة أخرى.");
+            alert(t('tokenNotFound'));
           }
         } catch (tokenError: any) {
           console.error("Token Error Details:", tokenError);
-          alert(`فشل الحصول على التوكن:\n${tokenError.message}\n\nتأكد من:\n1. الاتصال بالإنترنت\n2. عدم تفعيل وضع التصفح الخفي\n3. (للايفون) إضافة التطبيق للشاشة الرئيسية`);
+          alert(`${t('tokenError')}:\n${tokenError.message}`);
         }
       } else {
-        alert("تم رفض الإذن بالإشعارات. يرجى تفعيلها من إعدادات المتصفح يدوياً.");
+        alert(t('permissionDenied'));
       }
     } catch (err: any) {
       console.error("General Error:", err);
-      alert(`حدث خطأ غير متوقع: ${err.message || err}`);
+      alert(`${t('unexpectedError')}: ${err.message || err}`);
     } finally {
       setIsEnablingNotifications(false);
     }
@@ -174,12 +262,14 @@ const App: React.FC = () => {
   const fetchDailyTip = useCallback(async (force = false) => {
     if (!state.caregiverMode) {
       // Use local random tips for instant variety on every load/refresh
-      const randomTip = DAILY_TIPS[Math.floor(Math.random() * DAILY_TIPS.length)];
-      const personalizedTip = randomTip.replace('{name}', state.patientName || "حاج/ة");
+      const tips = (state.language === 'en') ? DAILY_TIPS_EN : DAILY_TIPS;
+      const randomTip = tips[Math.floor(Math.random() * tips.length)];
+      const title = t('defaultPatientTitle');
+      const personalizedTip = randomTip.replace('{name}', state.patientName || title);
       setState(prev => ({ ...prev, dailyTipContent: personalizedTip }));
       isDirty.current = true;
     }
-  }, [state.caregiverMode, state.patientName]);
+  }, [state.caregiverMode, state.patientName, state.language]);
 
   useEffect(() => { fetchDailyTip(); }, []);
 
@@ -187,20 +277,41 @@ const App: React.FC = () => {
     if (!state.notificationsEnabled) return;
     const checkAndNotify = async () => {
       const h = now.getHours();
+      // Adjust hour for business day logic (3 AM start)
+      // 0, 1, 2 become 24, 25, 26. 3-23 stay as is.
+      const businessHour = h < 3 ? h + 24 : h;
+
       const medsToNotify: Medication[] = [];
       const newNotifIds: string[] = [];
       state.medications.forEach(med => {
-        const slotHour = SLOT_HOURS[med.timeSlot];
+        let slotHour = SLOT_HOURS[med.timeSlot];
+        // Also adjust slot hour if it falls in the 0-2 range (though default slots don't, custom ones might)
+        const businessSlotHour = slotHour < 3 ? slotHour + 24 : slotHour;
+
         const notifId = `${today}-${med.id}-${state.caregiverMode ? 'cg' : 'pt'}`;
-        if (h >= slotHour && !state.takenMedications[med.id] && !state.sentNotifications.includes(notifId)) {
+        if (businessHour >= businessSlotHour && !state.takenMedications[med.id] && !state.sentNotifications.includes(notifId)) {
           medsToNotify.push(med);
           newNotifIds.push(notifId);
         }
       });
       if (medsToNotify.length > 0) {
-        const medsNames = medsToNotify.map(m => m.name).join(' و ');
-        const body = state.caregiverMode ? `تأخر الحاج ممدوح في تناول: ${medsNames}` : `يا حاج ممدوح، حان موعد تناول ${medsNames}`;
-        if (Notification.permission === 'granted') new Notification("صحتي 💊", { body });
+        const medsNames = medsToNotify.map(m => m.name).join(' & ');
+        let body = state.caregiverMode 
+          ? t('caregiverLateNotification').replace('{meds}', medsNames) 
+          : t('patientMedicationNotification').replace('{meds}', medsNames);
+        
+        // Try to generate smart reminder if online and patient mode
+        if (!state.caregiverMode && navigator.onLine) {
+           try {
+             // We don't await here to not block notification, but for the speech we want the smart text
+             // For simplicity in this loop, we'll use the default first, then try to fetch smart text for speech
+             // Or better: make checkAndNotify fully async and await it.
+             const smartBody = await generateReminderMessage(medsNames, state.patientName);
+             if (smartBody) body = smartBody;
+           } catch (e) { console.error("Smart TTS generation failed, using default", e); }
+        }
+
+        if (Notification.permission === 'granted') new Notification(t('appTitle'), { body });
         if (!isMuted && !state.caregiverMode) {
           await playChime();
           speakText(body);
@@ -229,7 +340,7 @@ const App: React.FC = () => {
       const isNew = state.remoteReminder.timestamp > Date.now() - 30000;
       if (isNew && !state.caregiverMode) {
         lastProcessedRemoteReminder.current = state.remoteReminder.timestamp;
-        const msg = `تذكير من المرافق: يا حاج ممدوح لا تنسى تناول ${state.remoteReminder.medName}`;
+        const msg = t('caregiverReminder').replace('{medName}', state.remoteReminder.medName);
         if (!isMuted) {
           playChime();
           speakText(msg);
@@ -277,16 +388,51 @@ const App: React.FC = () => {
 
   const toggleMedication = (id: string) => {
     const med = state.medications.find(m => m.id === id);
+    if (!med) return;
+
     lastLocalActionTime.current = Date.now();
     isDirty.current = true;
     const isTaking = !state.takenMedications[id];
     
     setState(prev => {
       const newTaken = { ...prev.takenMedications, [id]: isTaking };
+      
+      // Update stock logic
+      let newMeds = prev.medications;
+      if (typeof med.stock === 'number') {
+        newMeds = prev.medications.map(m => {
+          if (m.id === id) {
+            const currentStock = m.stock || 0;
+            const newStock = isTaking ? currentStock - 1 : currentStock + 1;
+            return { ...m, stock: newStock };
+          }
+          return m;
+        });
+      }
+
       const newHistory = { ...prev.dailyReports, [today]: { report: prev.currentReport, takenMedications: newTaken } };
-      return { ...prev, takenMedications: newTaken, dailyReports: newHistory };
+      return { ...prev, takenMedications: newTaken, dailyReports: newHistory, medications: newMeds };
     });
-    addHistoryAction(isTaking ? "تناول دواء" : "إلغاء تناول دواء", med?.name || id);
+
+    // Check for low stock notification
+    if (isTaking && typeof med.stock === 'number') {
+       const newStock = med.stock - 1;
+       if (newStock <= (med.lowStockThreshold || 5)) {
+         const medName = state.language === 'en' && med.nameEn ? med.nameEn : med.name;
+         const msg = t('lowStockWarning').replace('{med}', medName).replace('{count}', newStock.toString());
+         
+         if (Notification.permission === 'granted') {
+            new Notification(t('appTitle'), { body: msg });
+         }
+         if (!isMuted) {
+           speakText(msg);
+         }
+         // Small delay to ensure state update renders first (optional, but good for UX)
+         setTimeout(() => alert(msg), 100);
+       }
+    }
+
+    addHistoryAction(isTaking ? t('medicationTakenAction') : t('medicationUntakenAction'), med?.name || id);
   };
 
   const updateReport = (updates: Partial<HealthReport>) => {
@@ -314,11 +460,11 @@ const App: React.FC = () => {
       let newMeds;
       if (med.id) {
         newMeds = prev.medications.map(m => m.id === med.id ? { ...m, ...med } as Medication : m);
-        addHistoryAction("تعديل دواء", med.name || "");
+        addHistoryAction(t('editMedicationAction'), med.name || "");
       } else {
         const newMed = { ...med, id: Math.random().toString(36).substr(2, 9) } as Medication;
         newMeds = [...prev.medications, newMed];
-        addHistoryAction("إضافة دواء جديد", med.name || "");
+        addHistoryAction(t('addMedicationAction'), med.name || "");
       }
       return { ...prev, medications: newMeds };
     });
@@ -326,12 +472,12 @@ const App: React.FC = () => {
   };
 
   const deleteMedication = (id: string) => {
-    if (!confirm("هل أنت متأكد من حذف هذا الدواء؟")) return;
+    if (!confirm(t('confirmDeleteMedication'))) return;
     isDirty.current = true;
     lastLocalActionTime.current = Date.now();
     setState(prev => {
       const med = prev.medications.find(m => m.id === id);
-      addHistoryAction("حذف دواء", med?.name || "");
+      addHistoryAction(t('deleteMedicationAction'), med?.name || "");
       return { ...prev, medications: prev.medications.filter(m => m.id !== id) };
     });
   };
@@ -341,8 +487,14 @@ const App: React.FC = () => {
     try {
       const res = await analyzeHealthStatus(state);
       setAiResult(res);
-      if (!isMuted) await speakText(res.summary);
-    } catch (e) { alert("عذراً، تعذر التحليل الآن."); }
+      if (!isMuted) await speakText(t('analysisComplete'));
+    } catch (e: any) { 
+      const msg = e.message || t('analysisError');
+      alert(msg); 
+      if (msg.includes("API Key")) {
+        setActiveModal('settings');
+      }
+    }
     finally { setIsAnalyzing(false); }
   };
 
@@ -388,7 +540,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className={`min-h-screen bg-[#f1f5f9] dark:bg-slate-950 transition-all duration-300 pb-28 font-tajawal ${state.darkMode ? 'dark' : ''}`}>
+    <div dir={isRtl ? 'rtl' : 'ltr'} className={`min-h-screen bg-[#f1f5f9] dark:bg-slate-950 transition-all duration-300 pb-28 font-tajawal ${state.darkMode ? 'dark' : ''}`}>
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
         <header className={`glass-card rounded-[2rem] p-4 shadow-lg border-b-[6px] ${state.caregiverMode ? 'border-emerald-600 bg-emerald-50/90 dark:bg-emerald-950/50' : 'border-blue-600 bg-white/95 dark:bg-slate-900/80'} animate-in fade-in slide-in-from-top-4 duration-700`}>
           <div className="flex flex-col lg:flex-row items-center justify-between gap-4">
@@ -400,17 +552,17 @@ const App: React.FC = () => {
                 <h1 className="text-2xl font-black dark:text-white leading-tight tracking-tight">{state.patientName}</h1>
                 <div className="flex items-center gap-2 mt-1">
                   <span className="px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded-full text-xs font-black text-slate-500 border dark:border-slate-700 uppercase flex items-center gap-2">
-                    كود المريض: <span className="text-sm font-bold text-slate-700 dark:text-slate-300">{state.caregiverMode ? state.caregiverTargetId : state.patientId}</span>
+                    {t('patientCode')}: <span className="text-sm font-bold text-slate-700 dark:text-slate-300">{state.caregiverMode ? state.caregiverTargetId : state.patientId}</span>
                     <button 
                       onClick={() => { 
                         const id = state.caregiverMode ? state.caregiverTargetId : state.patientId;
                         if (id) {
                           navigator.clipboard.writeText(id); 
-                          alert('تم نسخ الكود: ' + id);
+                          alert(t('codeCopied') + ': ' + id);
                         }
                       }} 
                       className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md transition-colors text-blue-600"
-                      title="نسخ الكود"
+                      title={t('copyCode')}
                     >
                       <Copy className="w-3.5 h-3.5"/>
                     </button>
@@ -432,11 +584,11 @@ const App: React.FC = () => {
           <div className="mt-4 space-y-2">
              <div className="flex justify-between items-end">
                 <div className="text-right">
-                   <p className="text-[9px] font-black text-slate-400 uppercase mb-0.5">نسبة الإنجاز اليومي</p>
+                   <p className="text-[9px] font-black text-slate-400 uppercase mb-0.5">{t('dailyProgress')}</p>
                    <span className={`text-3xl font-black ${state.caregiverMode ? 'text-emerald-600' : 'text-blue-600'} tabular-nums`}>{Math.round(progress)}%</span>
                 </div>
                 <div className={`text-left ${state.caregiverMode ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-100 dark:border-emerald-800' : 'bg-blue-50 dark:bg-blue-900/20 border-blue-100 dark:border-blue-800'} px-3 py-1.5 rounded-lg border`}>
-                   <span className={`text-[11px] font-black ${state.caregiverMode ? 'text-emerald-700 dark:text-emerald-300' : 'text-blue-700 dark:text-blue-300'}`}>{Object.values(state.takenMedications).filter(Boolean).length} / {state.medications.length} دواء</span>
+                   <span className={`text-[11px] font-black ${state.caregiverMode ? 'text-emerald-700 dark:text-emerald-300' : 'text-blue-700 dark:text-blue-300'}`}>{Object.values(state.takenMedications).filter(Boolean).length} / {state.medications.length} {t('medicineCountSuffix')}</span>
                 </div>
              </div>
              <div className="h-4 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden border-2 border-white dark:border-slate-700 shadow-inner p-0.5">
@@ -454,7 +606,7 @@ const App: React.FC = () => {
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                        <div className="p-1.5 bg-white/20 backdrop-blur-md rounded-lg"><Sparkles className="w-4 h-4 text-yellow-300" /></div>
-                       <h2 className="font-black text-base tracking-tight">نصيحة اليوم</h2>
+                       <h2 className="font-black text-base tracking-tight">{t('tipOfTheDay')}</h2>
                     </div>
                     <button onClick={() => fetchDailyTip(true)} className={`p-1.5 bg-white/10 rounded-lg hover:bg-white/20 transition-all ${isFetchingTip ? 'animate-spin' : ''}`}>
                       <RefreshCw className="w-3.5 h-3.5" />
@@ -465,7 +617,7 @@ const App: React.FC = () => {
                   </p>
                   <div className="flex justify-end">
                     <button onClick={() => speakText(state.dailyTipContent || '')} className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 backdrop-blur-md rounded-lg hover:bg-white/30 text-[8px] font-black transition-all border border-white/10">
-                      <Volume2 className="w-3.5 h-3.5" /> استماع
+                      <Volume2 className="w-3.5 h-3.5" /> {t('listen')}
                     </button>
                   </div>
                 </div>
@@ -476,11 +628,11 @@ const App: React.FC = () => {
               <div className="flex items-center justify-between px-2">
                  {state.caregiverMode && (
                    <button onClick={() => { setEditingMed({timeSlot: 'morning-fasting'}); setActiveModal('medEditor'); }} className="p-3 bg-blue-600 text-white rounded-xl shadow-lg hover:scale-105 active:scale-95 transition-all flex items-center gap-2 text-[10px] font-black">
-                     <Plus className="w-5 h-5"/> إضافة دواء
+                     <Plus className="w-5 h-5"/> {t('addMedication')}
                    </button>
                  )}
                  <h2 className="text-2xl font-black flex items-center justify-end gap-3 dark:text-white">
-                   جدول الأدوية <div className="p-2 bg-blue-100 dark:bg-blue-900/40 rounded-lg"><ClipboardList className="w-6 h-6 text-blue-600" /></div>
+                   {t('medSchedule')} <div className="p-2 bg-blue-100 dark:bg-blue-900/40 rounded-lg"><ClipboardList className="w-6 h-6 text-blue-600" /></div>
                  </h2>
               </div>
               
@@ -494,7 +646,7 @@ const App: React.FC = () => {
                       <div className="flex items-center gap-4 pr-4 border-r-4 border-blue-500 text-right">
                         <div className={`p-3 rounded-xl ${cfg.color.split(' ')[0]} dark:bg-slate-800 shadow-sm border dark:border-slate-700`}>{cfg.icon}</div>
                         <div>
-                          <h3 className="font-black text-lg text-slate-800 dark:text-slate-200">{cfg.label}</h3>
+                          <h3 className="font-black text-lg text-slate-800 dark:text-slate-200">{t(cfg.label as TranslationKey)}</h3>
                           <span className="text-[10px] text-blue-600 dark:text-blue-400 font-black tracking-widest">{formatHour(SLOT_HOURS[slot])}:00</span>
                         </div>
                       </div>
@@ -509,6 +661,11 @@ const App: React.FC = () => {
                                <div className="flex-1 text-right">
                                  <h4 className={`font-black text-xl dark:text-white ${isTaken ? 'line-through' : ''}`}>{med.name}</h4>
                                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 mt-1">{med.dosage} • {med.frequencyLabel}</p>
+                                 {med.stock !== undefined && (
+                                   <p className={`text-[10px] font-black mt-1 ${med.stock <= (med.lowStockThreshold || 5) ? 'text-red-500 animate-pulse' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                                     {t('stockLabel')}: {med.stock}
+                                   </p>
+                                 )}
                                </div>
                                
                                <div className="flex flex-col gap-2">
@@ -538,18 +695,21 @@ const App: React.FC = () => {
           </div>
 
           <div className="lg:col-span-7 space-y-8">
-            <section className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-xl border dark:border-slate-800 grid grid-cols-2 md:grid-cols-4 gap-4 animate-in zoom-in-95 duration-500">
+            <section className="bg-white/40 dark:bg-slate-900/40 backdrop-blur-3xl p-6 rounded-[3rem] shadow-2xl border border-white/50 dark:border-white/5 grid grid-cols-2 md:grid-cols-4 gap-5 animate-in zoom-in-95 duration-700 relative overflow-hidden group">
+               <div className="absolute inset-0 bg-gradient-to-br from-white/40 via-white/10 to-transparent dark:from-white/5 dark:to-transparent opacity-50 pointer-events-none"></div>
+               <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-400/20 rounded-full blur-3xl group-hover:bg-blue-400/30 transition-all duration-1000"></div>
+               <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-emerald-400/20 rounded-full blur-3xl group-hover:bg-emerald-400/30 transition-all duration-1000"></div>
                {[
-                 { label: 'الضغط', val: `${state.currentReport.systolicBP || '--'}/${state.currentReport.diastolicBP || '--'}`, icon: <Heart className="w-5 h-5 text-red-500"/>, color: 'text-red-600', unit: 'mmHg' },
-                 { label: 'سكر الدم', val: state.currentReport.bloodSugar || '--', icon: <Droplets className="w-5 h-5 text-blue-400"/>, color: 'text-blue-500', unit: 'mg/dL' },
-                 { label: 'أكسجين', val: `${state.currentReport.oxygenLevel || '--'}`, icon: <Wind className="w-5 h-5 text-indigo-500"/>, color: 'text-indigo-600', unit: '%' },
-                 { label: 'النبض', val: state.currentReport.heartRate || '--', icon: <Activity className="w-5 h-5 text-emerald-500"/>, color: 'text-emerald-600', unit: 'bpm' }
+                 { label: t('bloodPressure'), val: `${state.currentReport.systolicBP || '--'}/${state.currentReport.diastolicBP || '--'}`, icon: <Heart className="w-6 h-6 text-red-500 fill-red-500/20"/>, color: 'text-red-600 dark:text-red-400', unit: 'mmHg', bg: 'bg-red-50/40 dark:bg-red-900/10' },
+                 { label: t('bloodSugar'), val: state.currentReport.bloodSugar || '--', icon: <Droplets className="w-6 h-6 text-blue-500 fill-blue-500/20"/>, color: 'text-blue-600 dark:text-blue-400', unit: 'mg/dL', bg: 'bg-blue-50/40 dark:bg-blue-900/10' },
+                 { label: t('oxygenLevel'), val: `${state.currentReport.oxygenLevel || '--'}`, icon: <Wind className="w-6 h-6 text-indigo-500 fill-indigo-500/20"/>, color: 'text-indigo-600 dark:text-indigo-400', unit: '%', bg: 'bg-indigo-50/40 dark:bg-indigo-900/10' },
+                 { label: t('heartRate'), val: state.currentReport.heartRate || '--', icon: <Activity className="w-6 h-6 text-emerald-500 fill-emerald-500/20"/>, color: 'text-emerald-600 dark:text-emerald-400', unit: 'bpm', bg: 'bg-emerald-50/40 dark:bg-emerald-900/10' }
                ].map((v, i) => (
-                 <div key={i} className="text-right border-r-2 dark:border-slate-800 pr-4 last:border-0 group">
-                   <div className="flex items-center justify-end gap-2 text-[8px] font-black text-slate-400 mb-2 uppercase tracking-tighter">{v.label} {v.icon}</div>
-                   <div className="flex items-baseline justify-end gap-1">
-                      <span className="text-[8px] font-black text-slate-300">{v.unit}</span>
-                      <p className={`text-2xl font-black ${v.color} tabular-nums tracking-tighter`}>{v.val}</p>
+                 <div key={i} className={`text-right p-5 rounded-[2rem] ${v.bg} border border-white/60 dark:border-white/5 group hover:scale-105 hover:shadow-lg transition-all duration-300 relative z-10 backdrop-blur-sm`}>
+                   <div className="flex items-center justify-end gap-2 text-[11px] font-black text-slate-500 dark:text-slate-400 mb-2 uppercase tracking-tighter">{v.label} {v.icon}</div>
+                   <div className="flex items-baseline justify-end gap-1.5">
+                      <span className="text-[10px] font-black text-slate-400 dark:text-slate-500">{v.unit}</span>
+                      <p className={`text-3xl font-black ${v.color} tabular-nums tracking-tighter drop-shadow-sm`}>{v.val}</p>
                    </div>
                  </div>
                ))}
@@ -561,29 +721,39 @@ const App: React.FC = () => {
                <div className="flex items-center justify-between mb-8 relative z-10">
                   <div className="p-4 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl shadow-xl ring-4 ring-white/5"><BrainCircuit className="w-8 h-8 text-white" /></div>
                   <div className="text-right">
-                    <h2 className="font-black text-2xl tracking-tight">خبير صحتي الذكي</h2>
+                    <h2 className="font-black text-2xl tracking-tight">{t('healthExpert')}</h2>
                     <p className="text-[10px] text-blue-400 font-black uppercase tracking-[0.2em] mt-1">Gemini AI</p>
                   </div>
                </div>
                <button onClick={handleAI} disabled={isAnalyzing} className="w-full py-6 bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-500 hover:to-indigo-600 disabled:from-slate-800 disabled:to-slate-900 rounded-[1.5rem] font-black text-lg shadow-xl active:scale-95 transition-all flex items-center justify-center gap-4 relative z-10 border border-white/10">
-                 {isAnalyzing ? <RefreshCw className="w-6 h-6 animate-spin" /> : <><Zap className="w-6 h-6 fill-current text-yellow-300" /> تحليل الحالة الآن</>}
+                 {isAnalyzing ? <RefreshCw className="w-6 h-6 animate-spin" /> : <><Zap className="w-6 h-6 fill-current text-yellow-300" /> {t('analyzeNow')}</>}
                </button>
                {aiResult && (
                  <div className="mt-8 space-y-8 animate-in fade-in slide-in-from-bottom-6 duration-700 text-right relative z-10">
                     <div className="p-6 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-inner">
-                       <h3 className="text-blue-400 font-black text-sm mb-3 flex items-center justify-end gap-2">ملخص الحالة <FileText className="w-4 h-4"/></h3>
+                       <h3 className="text-blue-400 font-black text-sm mb-3 flex items-center justify-end gap-2">{t('healthSummary')} <FileText className="w-4 h-4"/></h3>
                        <p className="text-sm leading-relaxed text-slate-200 font-medium">{aiResult.summary}</p>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                       <div className="p-4 bg-emerald-500/10 backdrop-blur-sm rounded-2xl border border-emerald-500/20">
-                          <h4 className="text-emerald-400 font-black text-xs mb-3 flex items-center justify-end gap-2">توصيات <CheckCircle className="w-4 h-4"/></h4>
-                          <ul className="text-xs space-y-2 font-bold text-slate-300">{aiResult.recommendations.map((r, i) => <li key={i} className="pr-3 border-r-2 border-emerald-500/40">{r}</li>)}</ul>
-                       </div>
-                       <div className="p-4 bg-red-500/10 backdrop-blur-sm rounded-2xl border border-red-500/20">
-                          <h4 className="text-red-400 font-black text-xs mb-3 flex items-center justify-end gap-2">تحذيرات <AlertTriangle className="w-4 h-4"/></h4>
-                          <ul className="text-xs space-y-2 font-bold text-slate-300">{aiResult.warnings.map((w, i) => <li key={i} className="pr-3 border-r-2 border-red-500/40">{w}</li>)}</ul>
-                       </div>
-                    </div>
+                      <div className="p-4 bg-emerald-500/10 backdrop-blur-sm rounded-2xl border border-emerald-500/20">
+                         <h4 className="text-emerald-400 font-black text-xs mb-3 flex items-center justify-end gap-2">{t('recommendations')} <CheckCircle className="w-4 h-4"/></h4>
+                         <ul className="text-xs space-y-2 font-bold text-slate-300">
+                           {Array.isArray(aiResult.recommendations) && aiResult.recommendations.map((r, i) => <li key={i} className="pr-3 border-r-2 border-emerald-500/40">{r}</li>)}
+                         </ul>
+                      </div>
+                      <div className="p-4 bg-red-500/10 backdrop-blur-sm rounded-2xl border border-red-500/20">
+                         <h4 className="text-red-400 font-black text-xs mb-3 flex items-center justify-end gap-2">{t('warnings')} <AlertTriangle className="w-4 h-4"/></h4>
+                         <ul className="text-xs space-y-2 font-bold text-slate-300">
+                           {Array.isArray(aiResult.warnings) && aiResult.warnings.map((w, i) => <li key={i} className="pr-3 border-r-2 border-red-500/40">{w}</li>)}
+                         </ul>
+                      </div>
+                   </div>
+                   {Array.isArray(aiResult.positivePoints) && aiResult.positivePoints.length > 0 && (
+                      <div className="p-4 bg-blue-500/10 backdrop-blur-sm rounded-2xl border border-blue-500/20">
+                         <h4 className="text-blue-400 font-black text-xs mb-3 flex items-center justify-end gap-2">{t('positiveSigns')} <ThumbsUp className="w-4 h-4"/></h4>
+                         <ul className="text-xs space-y-2 font-bold text-slate-300">{aiResult.positivePoints.map((p, i) => <li key={i} className="pr-3 border-r-2 border-blue-500/40">{p}</li>)}</ul>
+                      </div>
+                   )}
                  </div>
                )}
             </section>
@@ -591,17 +761,17 @@ const App: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <button onClick={() => setActiveModal('procedures')} className="p-8 bg-white dark:bg-slate-900 rounded-[2rem] border-2 border-amber-100 dark:border-amber-900/20 text-right hover:border-amber-400 transition-all shadow-lg group">
                 <div className="p-3 bg-amber-50 dark:bg-amber-900/30 w-fit rounded-xl mb-4 group-hover:scale-110 transition-transform"><ListTodo className="w-8 h-8 text-amber-500" /></div>
-                <h3 className="font-black text-xl text-slate-800 dark:text-slate-200">الإجراءات</h3>
+                <h3 className="font-black text-xl text-slate-800 dark:text-slate-200">{t('nextSteps')}</h3>
                 <p className="text-[8px] text-slate-400 font-black mt-2 uppercase tracking-widest">Next Steps</p>
               </button>
               <button onClick={() => setActiveModal('summary')} className="p-8 bg-white dark:bg-slate-900 rounded-[2rem] border-2 border-blue-100 dark:border-blue-900/20 text-right hover:border-blue-400 transition-all shadow-lg group">
                 <div className="p-3 bg-blue-50 dark:bg-blue-900/30 w-fit rounded-xl mb-4 group-hover:scale-110 transition-transform"><FileText className="w-8 h-8 text-blue-500" /></div>
-                <h3 className="font-black text-xl text-slate-800 dark:text-slate-200">الملخص الطبي</h3>
+                <h3 className="font-black text-xl text-slate-800 dark:text-slate-200">{t('medicalSummary')}</h3>
                 <p className="text-[8px] text-slate-400 font-black mt-2 uppercase tracking-widest">Medical History</p>
               </button>
               <button onClick={() => setActiveModal('diet')} className="p-8 bg-white dark:bg-slate-900 rounded-[2rem] border-2 border-emerald-100 dark:border-emerald-900/20 text-right hover:border-emerald-400 transition-all shadow-lg group">
                 <div className="p-3 bg-emerald-50 dark:bg-emerald-900/30 w-fit rounded-xl mb-4 group-hover:scale-110 transition-transform"><UtensilsCrossed className="w-8 h-8 text-emerald-500" /></div>
-                <h3 className="font-black text-xl text-slate-800 dark:text-slate-200">نظام الأكل</h3>
+                <h3 className="font-black text-xl text-slate-800 dark:text-slate-200">{t('diet')}</h3>
                 <p className="text-[8px] text-slate-400 font-black mt-2 uppercase tracking-widest">Diet Plan</p>
               </button>
             </div>
@@ -609,10 +779,11 @@ const App: React.FC = () => {
         </main>
       </div>
 
-      <footer className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[88%] max-w-md bg-white/80 dark:bg-slate-900/80 backdrop-blur-2xl border border-white/50 dark:border-slate-800 px-4 py-1.5 rounded-[2.5rem] shadow-2xl z-[100] flex items-center justify-around">
-        <button onClick={() => setActiveModal('report')} className="p-2.5 text-blue-600 bg-blue-50 dark:bg-blue-900/40 rounded-[1rem] active:scale-90 transition-all"><DoctorIcon className="w-5 h-5"/></button>
-        <button onClick={handleAI} className="p-3 bg-gradient-to-br from-blue-600 to-indigo-700 text-white rounded-full shadow-xl active:scale-95 -translate-y-4 border-[4px] border-white dark:border-slate-950 transition-all"><BrainCircuit className="w-6.5 h-6.5"/></button>
-        <button onClick={() => setActiveModal('calendar')} className="p-2.5 text-slate-500 dark:text-slate-400 rounded-[1rem] active:scale-90 transition-all"><CalendarIcon className="w-5 h-5"/></button>
+      <footer className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[95%] max-w-lg bg-white/90 dark:bg-slate-900/90 backdrop-blur-2xl border border-white/50 dark:border-slate-800 px-6 py-3 rounded-[2.5rem] shadow-2xl z-[100] flex items-center justify-between gap-2">
+        <button onClick={() => setActiveModal('report')} className="p-3 text-blue-600 bg-blue-50 dark:bg-blue-900/40 rounded-2xl active:scale-90 transition-all"><DoctorIcon className="w-6 h-6"/></button>
+        <button onClick={() => { stopSpeech(); setIsMuted(!isMuted); }} className={`p-3 rounded-2xl active:scale-90 transition-all ${isMuted ? 'text-red-500 bg-red-50 dark:bg-red-900/20' : 'text-slate-500 bg-slate-50 dark:bg-slate-800'}`}>{isMuted ? <VolumeX className="w-6 h-6"/> : <Volume2 className="w-6 h-6"/>}</button>
+        <button onClick={handleAI} className="p-4 bg-gradient-to-br from-blue-600 to-indigo-700 text-white rounded-full shadow-xl active:scale-95 -translate-y-8 border-[6px] border-white dark:border-slate-950 transition-all"><BrainCircuit className="w-8 h-8"/></button>
+        <button onClick={() => setActiveModal('calendar')} className="p-3 text-slate-500 dark:text-slate-400 rounded-2xl active:scale-90 transition-all"><CalendarIcon className="w-6 h-6"/></button>
       </footer>
 
       {activeModal === 'report' && (
@@ -621,36 +792,36 @@ const App: React.FC = () => {
               <div className="flex justify-between items-center border-b dark:border-slate-800 pb-6">
                 <button onClick={() => setActiveModal(null)} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl text-red-500"><X className="w-6 h-6"/></button>
                 <div className="text-right">
-                   <h2 className="text-2xl font-black dark:text-white">تقرير الحالة اليومي</h2>
-                   <p className="text-xs font-bold text-slate-400 mt-1">تحديث بيانات الحاج ممدوح</p>
+                   <h2 className="text-2xl font-black dark:text-white">{t('dailyReport')}</h2>
+                   <p className="text-xs font-bold text-slate-400 mt-1">{t('updatePatientData')}</p>
                 </div>
               </div>
               
               <div className="grid grid-cols-2 gap-4">
                  <div className="space-y-2">
-                   <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">الضغط (عالي)</label>
+                   <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">{t('systolic')}</label>
                    <input type="number" placeholder="120" value={state.currentReport.systolicBP || ''} onChange={e => updateReport({systolicBP: parseInt(e.target.value)})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl text-center font-black text-xl dark:text-white border-2 border-transparent focus:border-blue-500 outline-none shadow-inner"/>
                  </div>
                  <div className="space-y-2">
-                   <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">الضغط (واطي)</label>
+                   <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">{t('diastolic')}</label>
                    <input type="number" placeholder="80" value={state.currentReport.diastolicBP || ''} onChange={e => updateReport({diastolicBP: parseInt(e.target.value)})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl text-center font-black text-xl dark:text-white border-2 border-transparent focus:border-blue-500 outline-none shadow-inner"/>
                  </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                  <div className="space-y-2">
-                   <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">سكر الدم</label>
+                   <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">{t('sugar')}</label>
                    <input type="number" placeholder="100" value={state.currentReport.bloodSugar || ''} onChange={e => updateReport({bloodSugar: parseInt(e.target.value)})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl text-center font-black text-xl dark:text-white border-2 border-transparent focus:border-blue-500 outline-none shadow-inner"/>
                  </div>
                  <div className="space-y-2">
-                   <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">الأكسجين</label>
+                   <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">{t('oxygen')}</label>
                    <input type="number" placeholder="98" value={state.currentReport.oxygenLevel || ''} onChange={e => updateReport({oxygenLevel: parseInt(e.target.value)})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl text-center font-black text-xl dark:text-white border-2 border-transparent focus:border-blue-500 outline-none shadow-inner"/>
                  </div>
               </div>
 
               {/* Symptoms Selection Section */}
               <div className="space-y-4">
-                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest flex items-center justify-end gap-2">الأعراض الجانبية <AlertTriangle className="w-3 h-3"/></label>
+                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest flex items-center justify-end gap-2">{t('sideEffects')} <AlertTriangle className="w-3 h-3"/></label>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                    {SYMPTOMS.map(symptom => {
                      const isSelected = state.currentReport.symptoms?.includes(symptom);
@@ -661,7 +832,7 @@ const App: React.FC = () => {
                          className={`p-3 rounded-xl border-2 text-[10px] font-black transition-all flex items-center justify-between gap-2 ${isSelected ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 shadow-md' : 'border-transparent bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400'}`}
                        >
                          {isSelected && <CheckCircle className="w-3 h-3 shrink-0 text-emerald-500" />}
-                         <span className="flex-1 text-center">{symptom}</span>
+                         <span className="flex-1 text-center">{t(symptom as TranslationKey)}</span>
                        </button>
                      );
                    })}
@@ -669,54 +840,54 @@ const App: React.FC = () => {
               </div>
 
               <div className="space-y-4">
-                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest flex items-center justify-end gap-2">جودة النوم <Moon className="w-3 h-3"/></label>
+                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest flex items-center justify-end gap-2">{t('sleepQuality')} <Moon className="w-3 h-3"/></label>
                 <div className="grid grid-cols-3 gap-2">
                    {[
-                     { id: 'good', label: 'عميق', color: 'text-emerald-500' },
-                     { id: 'fair', label: 'متقطع', color: 'text-amber-500' },
-                     { id: 'poor', label: 'أرق', color: 'text-red-500' },
+                     { id: 'good', label: 'good', color: 'text-emerald-500' },
+                     { id: 'fair', label: 'fair', color: 'text-amber-500' },
+                     { id: 'poor', label: 'poor', color: 'text-red-500' },
                    ].map(item => (
                      <button key={item.id} onClick={() => updateReport({sleepQuality: item.id as any})} className={`flex flex-col items-center gap-1 p-3 rounded-xl border-2 transition-all ${state.currentReport.sleepQuality === item.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/40' : 'border-transparent bg-slate-50 dark:bg-slate-800'}`}>
-                        <span className={`text-[10px] font-black ${item.color}`}>{item.label}</span>
+                        <span className={`text-[10px] font-black ${item.color}`}>{t(item.label as TranslationKey)}</span>
                      </button>
                    ))}
                 </div>
               </div>
 
               <div className="space-y-4">
-                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest flex items-center justify-end gap-2">الشهية <Utensils className="w-3 h-3"/></label>
+                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest flex items-center justify-end gap-2">{t('appetite')} <Utensils className="w-3 h-3"/></label>
                 <div className="grid grid-cols-3 gap-2">
                    {[
-                     { id: 'good', label: 'ممتازة', color: 'text-emerald-500' },
-                     { id: 'fair', label: 'متوسطة', color: 'text-amber-500' },
-                     { id: 'poor', label: 'ضعيفة', color: 'text-red-500' },
+                     { id: 'good', label: 'good', color: 'text-emerald-500' },
+                     { id: 'fair', label: 'fair', color: 'text-amber-500' },
+                     { id: 'poor', label: 'poor', color: 'text-red-500' },
                    ].map(item => (
                      <button key={item.id} onClick={() => updateReport({appetite: item.id as any})} className={`flex flex-col items-center gap-1 p-3 rounded-xl border-2 transition-all ${state.currentReport.appetite === item.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/40' : 'border-transparent bg-slate-50 dark:bg-slate-800'}`}>
-                        <span className={`text-[10px] font-black ${item.color}`}>{item.label}</span>
+                        <span className={`text-[10px] font-black ${item.color}`}>{t(item.label as TranslationKey)}</span>
                      </button>
                    ))}
                 </div>
               </div>
 
               <div className="space-y-4">
-                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest flex items-center justify-end gap-2">الحالة المزاجية <Brain className="w-3 h-3"/></label>
+                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest flex items-center justify-end gap-2">{t('mood')} <Brain className="w-3 h-3"/></label>
                 <div className="grid grid-cols-4 gap-2">
                    {[
-                     { id: 'happy', label: 'سعيد', icon: <Smile className="w-6 h-6"/>, color: 'text-emerald-500' },
-                     { id: 'calm', label: 'مستقر', icon: <Meh className="w-6 h-6"/>, color: 'text-blue-500' },
-                     { id: 'tired', label: 'متعب', icon: <Zap className="w-6 h-6"/>, color: 'text-amber-500' },
-                     { id: 'anxious', label: 'قلق', icon: <Frown className="w-6 h-6"/>, color: 'text-red-500' },
+                     { id: 'happy', label: 'happy', icon: <Smile className="w-6 h-6"/>, color: 'text-emerald-500' },
+                     { id: 'calm', label: 'calm', icon: <Meh className="w-6 h-6"/>, color: 'text-blue-500' },
+                     { id: 'tired', label: 'tired', icon: <Zap className="w-6 h-6"/>, color: 'text-amber-500' },
+                     { id: 'anxious', label: 'anxious', icon: <Frown className="w-6 h-6"/>, color: 'text-red-500' },
                    ].map(item => (
                      <button key={item.id} onClick={() => updateReport({mood: item.id as any})} className={`flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition-all ${state.currentReport.mood === item.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/40' : 'border-transparent bg-slate-50 dark:bg-slate-800'}`}>
                         <div className={item.color}>{item.icon}</div>
-                        <span className="text-[8px] font-black dark:text-slate-300">{item.label}</span>
+                        <span className="text-[8px] font-black dark:text-slate-300">{t(item.label as TranslationKey)}</span>
                      </button>
                    ))}
                 </div>
               </div>
 
               <div className="bg-blue-50 dark:bg-blue-900/20 p-6 rounded-[2rem] border border-blue-100 dark:border-blue-800">
-                 <label className="text-[10px] font-black text-blue-400 uppercase block mb-4 text-center tracking-widest">عداد المياه (أكواب)</label>
+                 <label className="text-[10px] font-black text-blue-400 uppercase block mb-4 text-center tracking-widest">{t('waterIntakeCounter')}</label>
                  <div className="flex items-center justify-center gap-8">
                    <button onClick={() => updateReport({waterIntake: Math.max(0, (state.currentReport.waterIntake || 0) - 1)})} className="w-12 h-12 bg-white dark:bg-slate-800 rounded-xl shadow-md flex items-center justify-center text-blue-600 active:scale-90 transition-all"><Minus className="w-6 h-6"/></button>
                    <div className="text-center">
@@ -727,11 +898,78 @@ const App: React.FC = () => {
               </div>
 
               <div className="space-y-4">
-                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">ملاحظات إضافية</label>
-                <textarea value={state.currentReport.notes || ''} onChange={e => updateReport({notes: e.target.value})} placeholder="اكتب أي ملاحظة..." className="w-full p-6 bg-slate-50 dark:bg-slate-800 rounded-2xl text-right min-h-[120px] text-base dark:text-white border-2 border-transparent focus:border-blue-500 outline-none shadow-inner"/>
+                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">{t('additionalNotes')}</label>
+               <textarea value={state.currentReport.notes || ''} onChange={e => updateReport({notes: e.target.value})} placeholder={t('notesPlaceholder')} className="w-full p-6 bg-slate-50 dark:bg-slate-800 rounded-2xl text-right min-h-[120px] text-base dark:text-white border-2 border-transparent focus:border-blue-500 outline-none shadow-inner"/>
               </div>
               
-              <button onClick={() => { setActiveModal(null); addHistoryAction("تحديث التقرير", "تم حفظ كافة القياسات والأعراض"); }} className="w-full py-6 bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-[1.5rem] font-black text-lg shadow-xl active:scale-95">حفظ وإغلاق</button>
+              <div className="pt-2">
+                 <button 
+                   onClick={() => {
+                      const r = state.currentReport;
+                      const text = `*${t('healthStatusReport')} - ${state.patientName}*\n📅 ${t('date')}: ${r.date}\n❤️ ${t('bloodPressure')}: ${r.systolicBP || '--'}/${r.diastolicBP || '--'}\n🍬 ${t('bloodSugar')}: ${r.bloodSugar || '--'}\n🫁 ${t('oxygenLevel')}: ${r.oxygenLevel || '--'}%\n💓 ${t('heartRate')}: ${r.heartRate || '--'}\n⚠️ ${t('symptoms')}: ${r.symptoms.map(s => t(s as TranslationKey)).join(', ') || t('none')}\n😴 ${t('sleepQuality')}: ${r.sleepQuality ? t(r.sleepQuality as TranslationKey) : '--'}\n😋 ${t('appetite')}: ${r.appetite ? t(r.appetite as TranslationKey) : '--'}\n😊 ${t('mood')}: ${r.mood ? t(r.mood as TranslationKey) : '--'}\n📝 ${t('notes')}: ${r.notes || t('none')}`;
+                      window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+                   }}
+                   className="w-full py-4 mb-3 bg-[#25D366] hover:bg-[#128C7E] text-white rounded-[1.5rem] font-black text-lg shadow-lg active:scale-95 flex items-center justify-center gap-3 transition-colors"
+                 >
+                   <Share2 className="w-6 h-6" /> {t('shareReportWhatsapp')}
+                 </button>
+                 <button onClick={() => { setActiveModal(null); addHistoryAction(t('reportUpdateAction'), t('reportUpdateDesc')); }} className="w-full py-6 bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-[1.5rem] font-black text-lg shadow-xl active:scale-95">{t('saveAndClose')}</button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {activeModal === 'medDetail' && selectedMed && (
+        <div className="fixed inset-0 z-[200] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+           <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[2.5rem] p-8 text-right space-y-6 animate-in zoom-in-95 max-h-[90vh] overflow-y-auto custom-scrollbar">
+              <div className="flex justify-between items-center mb-4">
+                <button onClick={() => setActiveModal(null)} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl"><X className="w-6 h-6"/></button>
+                <div className="text-right">
+                   <h2 className="text-2xl font-black dark:text-white">{selectedMed.name}</h2>
+                   <p className="text-sm font-bold text-slate-400 mt-1">{selectedMed.dosage} • {selectedMed.frequencyLabel}</p>
+                </div>
+              </div>
+
+              {isLoadingMedDetails ? (
+                <div className="py-12 text-center space-y-4">
+                  <RefreshCw className="w-12 h-12 text-blue-500 animate-spin mx-auto"/>
+                  <p className="text-slate-400 font-bold">{t('fetchingMedDetails')}</p>
+                </div>
+              ) : medDetails ? (
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+                   <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-2xl border border-amber-100 dark:border-amber-800/30">
+                      <h3 className="font-black text-amber-600 dark:text-amber-400 mb-3 flex items-center justify-end gap-2">
+                        {t('commonSideEffects')} <AlertTriangle className="w-5 h-5"/>
+                      </h3>
+                      <ul className="space-y-2">
+                        {medDetails.sideEffects.map((effect, i) => (
+                          <li key={i} className="text-sm font-bold text-slate-600 dark:text-slate-300 flex items-start justify-end gap-2">
+                            {effect} <span className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0"/>
+                          </li>
+                        ))}
+                      </ul>
+                   </div>
+
+                   <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-2xl border border-red-100 dark:border-red-800/30">
+                      <h3 className="font-black text-red-600 dark:text-red-400 mb-3 flex items-center justify-end gap-2">
+                        {t('importantWarnings')} <AlertTriangle className="w-5 h-5"/>
+                      </h3>
+                      <ul className="space-y-2">
+                        {medDetails.warnings.map((warning, i) => (
+                          <li key={i} className="text-sm font-bold text-slate-600 dark:text-slate-300 flex items-start justify-end gap-2">
+                            {warning} <span className="w-1.5 h-1.5 rounded-full bg-red-400 mt-1.5 shrink-0"/>
+                          </li>
+                        ))}
+                      </ul>
+                   </div>
+                </div>
+              ) : (
+                <div className="py-8 text-center text-slate-400 font-bold">
+                  {t('noAdditionalInfo')}
+                </div>
+              )}
+
+              <button onClick={() => setActiveModal(null)} className="w-full py-5 bg-slate-900 dark:bg-slate-800 text-white rounded-[1.5rem] font-black text-lg shadow-xl active:scale-95 transition-all">{t('close')}</button>
            </div>
         </div>
       )}
@@ -741,17 +979,28 @@ const App: React.FC = () => {
            <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[2.5rem] p-8 text-right space-y-6 animate-in zoom-in-95 max-h-[90vh] overflow-y-auto custom-scrollbar">
               <div className="flex justify-between items-center mb-4">
                 <button onClick={() => setActiveModal(null)} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl"><X className="w-6 h-6"/></button>
-                <h2 className="text-2xl font-black dark:text-white">{editingMed.id ? 'تعديل الدواء' : 'إضافة دواء'}</h2>
+                <h2 className="text-2xl font-black dark:text-white">{editingMed.id ? t('editMedication') : t('addMedication')}</h2>
               </div>
               
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 pr-1">اسم الدواء</label>
+                <label className="text-[10px] font-black text-slate-400 pr-1">{t('medicationName')}</label>
                 <input type="text" value={editingMed.name || ''} onChange={e => setEditingMed({...editingMed, name: e.target.value})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 pr-1">الجرعة</label>
+                <label className="text-[10px] font-black text-slate-400 pr-1">{t('dosage')}</label>
                 <input type="text" value={editingMed.dosage || ''} onChange={e => setEditingMed({...editingMed, dosage: e.target.value})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                 <div className="space-y-2">
+                   <label className="text-[10px] font-black text-slate-400 pr-1">{t('stock')}</label>
+                   <input type="number" value={editingMed.stock !== undefined ? editingMed.stock : ''} onChange={e => setEditingMed({...editingMed, stock: e.target.value ? parseInt(e.target.value) : undefined})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
+                 </div>
+                 <div className="space-y-2">
+                   <label className="text-[10px] font-black text-slate-400 pr-1">{t('lowStockThreshold')}</label>
+                   <input type="number" value={editingMed.lowStockThreshold !== undefined ? editingMed.lowStockThreshold : 5} onChange={e => setEditingMed({...editingMed, lowStockThreshold: e.target.value ? parseInt(e.target.value) : 5})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
+                 </div>
               </div>
 
               <div className="space-y-2">
@@ -764,11 +1013,11 @@ const App: React.FC = () => {
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 pr-1">توقيت الساعة</label>
-                <input type="text" placeholder="9:00 صباحاً" value={editingMed.frequencyLabel || ''} onChange={e => setEditingMed({...editingMed, frequencyLabel: e.target.value})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
+                <label className="text-[10px] font-black text-slate-400 pr-1">{t('timeClock')}</label>
+               <input type="text" placeholder={t('timePlaceholder')} value={editingMed.frequencyLabel || ''} onChange={e => setEditingMed({...editingMed, frequencyLabel: e.target.value})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
               </div>
 
-              <button onClick={() => saveMedication(editingMed)} className="w-full py-5 bg-blue-600 text-white rounded-[1.2rem] font-black text-lg shadow-xl active:scale-95 transition-all">حفظ</button>
+              <button onClick={() => saveMedication(editingMed)} className="w-full py-5 bg-blue-600 text-white rounded-[1.2rem] font-black text-lg shadow-xl active:scale-95 transition-all">{t('save')}</button>
            </div>
         </div>
       )}
@@ -781,7 +1030,7 @@ const App: React.FC = () => {
                  <div className="flex items-center gap-4">
                    <div className="text-right">
                       <h2 className="text-2xl font-black dark:text-white">
-                         {activeModal === 'summary' ? 'الملخص الطبي' : activeModal === 'diet' ? 'نظام التغذية' : 'الإجراءات'}
+                         {activeModal === 'summary' ? t('medicalSummary') : activeModal === 'diet' ? t('diet') : t('procedures')}
                       </h2>
                    </div>
                    <div className="p-3 bg-blue-100 dark:bg-blue-900/40 rounded-xl">
@@ -805,7 +1054,7 @@ const App: React.FC = () => {
                   {activeModal === 'summary' ? state.medicalHistorySummary : activeModal === 'diet' ? state.dietGuidelines : state.upcomingProcedures}
                 </div>
               )}
-              <button onClick={() => setActiveModal(null)} className="w-full mt-10 py-6 bg-slate-900 dark:bg-slate-800 text-white rounded-[1.5rem] font-black text-xl shadow-2xl active:scale-95">إغلاق</button>
+              <button onClick={() => setActiveModal(null)} className="w-full mt-10 py-6 bg-slate-900 dark:bg-slate-800 text-white rounded-[1.5rem] font-black text-xl shadow-2xl active:scale-95">{t('close')}</button>
            </div>
         </div>
       )}
@@ -822,7 +1071,7 @@ const App: React.FC = () => {
                 </div>
               </div>
               <div className="grid grid-cols-7 gap-3 mb-8">{renderCalendar()}</div>
-              <button onClick={() => setActiveModal(null)} className="w-full py-5 bg-slate-900 dark:bg-slate-800 text-white rounded-[1.2rem] font-black text-lg">الرجوع</button>
+              <button onClick={() => setActiveModal(null)} className="w-full py-5 bg-slate-900 dark:bg-slate-800 text-white rounded-[1.2rem] font-black text-lg">{t('back')}</button>
            </div>
         </div>
       )}
@@ -832,7 +1081,7 @@ const App: React.FC = () => {
            <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[2.5rem] p-8 max-h-[85vh] overflow-y-auto text-right animate-in slide-in-from-bottom-10">
               <div className="flex justify-between items-center mb-8 sticky top-0 bg-white dark:bg-slate-900 py-2 z-10">
                  <button onClick={() => setActiveModal(null)} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl"><X className="w-6 h-6"/></button>
-                 <h2 className="text-2xl font-black dark:text-white">سجل النشاطات</h2>
+                 <h2 className="text-2xl font-black dark:text-white">{t('activityLog')}</h2>
               </div>
               <div className="space-y-4">
                  {state.history.map((h, i) => (
@@ -848,7 +1097,7 @@ const App: React.FC = () => {
                    </div>
                  ))}
               </div>
-              <button onClick={() => setActiveModal(null)} className="w-full mt-8 py-5 bg-slate-900 dark:bg-slate-800 text-white rounded-xl font-black text-lg shadow-xl">إغلاق</button>
+              <button onClick={() => setActiveModal(null)} className="w-full mt-8 py-5 bg-slate-900 dark:bg-slate-800 text-white rounded-xl font-black text-lg shadow-xl">{t('close')}</button>
            </div>
         </div>
       )}
@@ -858,7 +1107,7 @@ const App: React.FC = () => {
            <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[2.5rem] p-8 text-right space-y-8 animate-in zoom-in-95">
               <div className="flex justify-between items-center mb-4">
                  <button onClick={() => setActiveModal(null)} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl"><X className="w-6 h-6"/></button>
-                 <h2 className="text-2xl font-black dark:text-white">الإعدادات</h2>
+                 <h2 className="text-2xl font-black dark:text-white">{t('settings')}</h2>
               </div>
               
               {!state.caregiverMode && (
@@ -868,49 +1117,58 @@ const App: React.FC = () => {
                   className={`w-full py-4 ${isEnablingNotifications ? 'bg-amber-300' : 'bg-amber-500'} text-white rounded-xl font-black text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-3`}
                 >
                   <BellRing className={`w-5 h-5 ${isEnablingNotifications ? 'animate-pulse' : ''}`}/> 
-                  {isEnablingNotifications ? 'جاري التفعيل...' : 'تفعيل تنبيهات الهاتف'}
+                  {isEnablingNotifications ? t('enabling') : t('enableNotifications')}
                 </button>
               )}
 
               <div className="space-y-3">
-                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">اسم المريض</label>
+                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">{t('language')}</label>
+                <div className="grid grid-cols-2 gap-4">
+                  <button onClick={() => { isDirty.current=true; setState(p => ({...p, language: 'ar'})); }} className={`py-4 rounded-xl font-black text-sm transition-all shadow-md ${state.language !== 'en' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-slate-700 text-slate-500'}`}>{t('languageButton')}</button>
+                  <button onClick={() => { isDirty.current=true; setState(p => ({...p, language: 'en'})); }} className={`py-4 rounded-xl font-black text-sm transition-all shadow-md ${state.language === 'en' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-slate-700 text-slate-500'}`}>English</button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">{t('patientName')}</label>
                 <input type="text" value={state.patientName} onChange={e => { isDirty.current=true; setState(p=>({...p, patientName:e.target.value})) }} className="w-full p-5 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-lg dark:text-white outline-none shadow-inner"/>
               </div>
+ 
               <div className="p-6 bg-slate-100 dark:bg-slate-800 rounded-[2rem] shadow-inner">
-                <label className="text-[10px] font-black text-slate-400 block mb-4 text-center uppercase tracking-widest">وضع التطبيق</label>
+                <label className="text-[10px] font-black text-slate-400 block mb-4 text-center uppercase tracking-widest">{t('appMode')}</label>
                 <div className="grid grid-cols-2 gap-4">
-                  <button onClick={() => setState(p => ({...p, caregiverMode: false}))} className={`py-4 rounded-xl font-black text-sm transition-all shadow-md ${!state.caregiverMode ? 'bg-blue-600 text-white' : 'bg-white dark:bg-slate-700 text-slate-500'}`}>وضع المريض</button>
-                  <button onClick={() => setState(p => ({...p, caregiverMode: true}))} className={`py-4 rounded-xl font-black text-sm transition-all shadow-md ${state.caregiverMode ? 'bg-emerald-600 text-white' : 'bg-white dark:bg-slate-700 text-slate-500'}`}>وضع المرافق</button>
+                  <button onClick={() => setState(p => ({...p, caregiverMode: false}))} className={`py-4 rounded-xl font-black text-sm transition-all shadow-md ${!state.caregiverMode ? 'bg-blue-600 text-white' : 'bg-white dark:bg-slate-700 text-slate-500'}`}>{t('patientMode')}</button>
+                 <button onClick={() => setState(p => ({...p, caregiverMode: true}))} className={`py-4 rounded-xl font-black text-sm transition-all shadow-md ${state.caregiverMode ? 'bg-emerald-600 text-white' : 'bg-white dark:bg-slate-700 text-slate-500'}`}>{t('caregiverMode')}</button>
                 </div>
               </div>
               {state.caregiverMode && (
                 <div className="space-y-4 animate-in slide-in-from-top-4">
-                  <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">كود المتابعة</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase pr-1 tracking-widest">{t('followUpCode')}</label>
                   <input type="text" placeholder="ABCDEF" value={state.caregiverTargetId || ''} onChange={e => setState(p=>({...p, caregiverTargetId:e.target.value.toUpperCase()}))} className="w-full p-6 bg-emerald-50 dark:bg-emerald-900/20 rounded-xl text-center font-black uppercase tracking-[0.4em] text-emerald-600 text-2xl border-4 border-dashed border-emerald-200 outline-none shadow-inner"/>
                 </div>
               )}
               {!state.caregiverMode && (
                  <div className="space-y-4">
                    <div className="p-6 bg-blue-50 dark:bg-blue-900/20 rounded-2xl border-2 border-blue-100 flex items-center justify-between shadow-inner">
-                      <button onClick={() => { navigator.clipboard.writeText(state.patientId); alert("تم النسخ"); }} className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-blue-600"><Copy className="w-5 h-5"/></button>
+                      <button onClick={() => { navigator.clipboard.writeText(state.patientId); alert(t('copied')); }} className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-blue-600"><Copy className="w-5 h-5"/></button>
                       <div className="text-right">
-                         <span className="text-[8px] font-black text-blue-400 uppercase tracking-widest">كودك الخاص</span>
+                         <span className="text-[8px] font-black text-blue-400 uppercase tracking-widest">{t('yourCode')}</span>
                          <p className="font-black text-2xl text-blue-700 dark:text-blue-300 tracking-[0.1em]">{state.patientId}</p>
                       </div>
                    </div>
 
                    {fcmToken && (
                      <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-2xl border-2 border-amber-100 dark:border-amber-800/40 flex items-center justify-between shadow-inner animate-in fade-in slide-in-from-bottom-2">
-                        <button onClick={() => { navigator.clipboard.writeText(fcmToken); alert("تم نسخ توكن الإشعارات"); }} className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-amber-600 hover:scale-105 transition-transform"><Copy className="w-5 h-5"/></button>
+                        <button onClick={() => { navigator.clipboard.writeText(fcmToken); alert(t('tokenCopied')); }} className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-amber-600 hover:scale-105 transition-transform"><Copy className="w-5 h-5"/></button>
                         <div className="text-right overflow-hidden">
-                           <span className="text-[8px] font-black text-amber-500 uppercase tracking-widest block mb-1">توكن الإشعارات (للاختبار)</span>
+                           <span className="text-[8px] font-black text-amber-500 uppercase tracking-widest block mb-1">{t('notificationToken')}</span>
                            <p className="font-mono text-[10px] text-amber-700 dark:text-amber-300 truncate max-w-[200px] dir-ltr text-left bg-white/50 dark:bg-black/20 p-1.5 rounded-lg border border-amber-200/50">{fcmToken.substring(0, 20)}...</p>
                         </div>
                      </div>
                    )}
                  </div>
               )}
-              <button onClick={() => setActiveModal(null)} className="w-full py-6 bg-slate-950 dark:bg-slate-800 text-white rounded-[1.5rem] font-black text-lg shadow-xl active:scale-95 transition-all">حفظ وإغلاق</button>
+              <button onClick={() => setActiveModal(null)} className="w-full py-6 bg-slate-950 dark:bg-slate-800 text-white rounded-[1.5rem] font-black text-lg shadow-xl active:scale-95 transition-all">{t('saveAndClose')}</button>
            </div>
         </div>
       )}
@@ -923,7 +1181,7 @@ const App: React.FC = () => {
               <p className="font-mono text-xs text-emerald-400 truncate dir-ltr text-left select-all">{fcmToken}</p>
             </div>
             <button 
-              onClick={() => { navigator.clipboard.writeText(fcmToken); alert("تم نسخ التوكن!"); }}
+              onClick={() => { navigator.clipboard.writeText(fcmToken); alert(t('tokenCopied')); }}
               className="p-3 bg-white/10 hover:bg-white/20 active:bg-white/30 rounded-xl transition-colors"
             >
               <Copy className="w-5 h-5" />
@@ -938,30 +1196,32 @@ const App: React.FC = () => {
               <div className="flex justify-between items-center mb-6 border-b dark:border-slate-800 pb-4">
                  <button onClick={() => setSelectedHistoryDate(null)} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl"><X className="w-6 h-6"/></button>
                  <div>
-                    <h2 className="text-2xl font-black dark:text-white">تفاصيل اليوم</h2>
-                    <p className="text-sm font-bold text-slate-400 mt-1">{new Date(selectedHistoryDate).toLocaleDateString('ar-EG', {weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'})}</p>
+                    <h2 className="text-2xl font-black dark:text-white">{t('dayDetails')}</h2>
+                    <p className="text-sm font-bold text-slate-400 mt-1">{new Date(selectedHistoryDate).toLocaleDateString(state.language === 'en' ? 'en-US' : 'ar-EG', {weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'})}</p>
                  </div>
               </div>
 
               {/* Medications Section */}
               <div className="mb-8">
                  <h3 className="font-black text-lg mb-4 flex items-center justify-end gap-2 dark:text-white">
-                    الأدوية
+                    {t('medications')}
                     <span className="p-2 bg-blue-50 dark:bg-blue-900/30 rounded-lg"><Pill className="w-5 h-5 text-blue-500"/></span>
                  </h3>
                  <div className="space-y-3">
                     {state.medications.map(med => {
                       const dayData = state.dailyReports[selectedHistoryDate];
                       const isTaken = dayData?.takenMedications?.[med.id];
+                      const medName = (state.language === 'en' && med.nameEn) ? med.nameEn : med.name;
+                      const medDosage = (state.language === 'en' && med.dosageEn) ? med.dosageEn : med.dosage;
                       return (
                         <div key={med.id} className={`p-4 rounded-2xl border-2 flex items-center justify-between ${isTaken ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-100 dark:border-emerald-800/50' : 'bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-800'}`}>
                            <div className="flex items-center gap-3">
                               {isTaken ? <CheckCircle className="w-6 h-6 text-emerald-500"/> : <XCircle className="w-6 h-6 text-slate-300"/>}
-                              <span className={`text-sm font-bold ${isTaken ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400'}`}>{isTaken ? 'تم أخذ الدواء' : 'لم يتم التسجيل'}</span>
+                              <span className={`text-sm font-bold ${isTaken ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-400'}`}>{isTaken ? t('medicationTakenStatus') : t('medicationNotRecorded')}</span>
                            </div>
                            <div className="text-right">
-                              <h4 className={`font-black ${isTaken ? 'text-emerald-900 dark:text-emerald-100' : 'text-slate-700 dark:text-slate-300'}`}>{med.name}</h4>
-                              <p className="text-[10px] font-bold text-slate-400 mt-1">{med.dosage}</p>
+                              <h4 className={`font-black ${isTaken ? 'text-emerald-900 dark:text-emerald-100' : 'text-slate-700 dark:text-slate-300'}`}>{medName}</h4>
+                              <p className="text-[10px] font-bold text-slate-400 mt-1">{medDosage}</p>
                            </div>
                         </div>
                       );
@@ -973,31 +1233,31 @@ const App: React.FC = () => {
               {state.dailyReports[selectedHistoryDate]?.report && (
                  <div>
                     <h3 className="font-black text-lg mb-4 flex items-center justify-end gap-2 dark:text-white">
-                       المؤشرات الحيوية
+                       {t('vitalSigns')}
                        <span className="p-2 bg-rose-50 dark:bg-rose-900/30 rounded-lg"><Activity className="w-5 h-5 text-rose-500"/></span>
                     </h3>
                     <div className="grid grid-cols-2 gap-3">
                        {state.dailyReports[selectedHistoryDate].report.systolicBP && (
                          <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
-                            <span className="text-[10px] font-black text-slate-400 block mb-1">الضغط</span>
+                            <span className="text-[10px] font-black text-slate-400 block mb-1">{t('bloodPressure')}</span>
                             <p className="text-xl font-black text-slate-700 dark:text-slate-200">{state.dailyReports[selectedHistoryDate].report.systolicBP}/{state.dailyReports[selectedHistoryDate].report.diastolicBP}</p>
                          </div>
                        )}
                        {state.dailyReports[selectedHistoryDate].report.bloodSugar && (
                          <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
-                            <span className="text-[10px] font-black text-slate-400 block mb-1">السكر</span>
+                            <span className="text-[10px] font-black text-slate-400 block mb-1">{t('bloodSugar')}</span>
                             <p className="text-xl font-black text-blue-600 dark:text-blue-400">{state.dailyReports[selectedHistoryDate].report.bloodSugar}</p>
                          </div>
                        )}
                        {state.dailyReports[selectedHistoryDate].report.oxygenLevel && (
                          <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
-                            <span className="text-[10px] font-black text-slate-400 block mb-1">الأكسجين</span>
+                            <span className="text-[10px] font-black text-slate-400 block mb-1">{t('oxygenLevel')}</span>
                             <p className="text-xl font-black text-emerald-600 dark:text-emerald-400">{state.dailyReports[selectedHistoryDate].report.oxygenLevel}%</p>
                          </div>
                        )}
                        {state.dailyReports[selectedHistoryDate].report.heartRate && (
                          <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
-                            <span className="text-[10px] font-black text-slate-400 block mb-1">النبض</span>
+                            <span className="text-[10px] font-black text-slate-400 block mb-1">{t('heartRate')}</span>
                             <p className="text-xl font-black text-rose-600 dark:text-rose-400">{state.dailyReports[selectedHistoryDate].report.heartRate}</p>
                          </div>
                        )}
@@ -1007,10 +1267,10 @@ const App: React.FC = () => {
                     <div className="mt-4 space-y-3">
                        {state.dailyReports[selectedHistoryDate].report.symptoms && state.dailyReports[selectedHistoryDate].report.symptoms.length > 0 && (
                           <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-right">
-                             <span className="text-[10px] font-black text-slate-400 block mb-2">الأعراض</span>
+                             <span className="text-[10px] font-black text-slate-400 block mb-2">{t('symptoms')}</span>
                              <div className="flex flex-wrap justify-end gap-2">
                                 {state.dailyReports[selectedHistoryDate].report.symptoms.map((s, i) => (
-                                   <span key={i} className="px-3 py-1 bg-white dark:bg-slate-700 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 shadow-sm border border-slate-100 dark:border-slate-600">{s}</span>
+                                   <span key={i} className="px-3 py-1 bg-white dark:bg-slate-700 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 shadow-sm border border-slate-100 dark:border-slate-600">{t(s as TranslationKey)}</span>
                                 ))}
                              </div>
                           </div>
@@ -1019,14 +1279,14 @@ const App: React.FC = () => {
                        <div className="grid grid-cols-2 gap-3">
                           {state.dailyReports[selectedHistoryDate].report.mood && (
                              <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
-                                <span className="text-[10px] font-black text-slate-400 block mb-1">المزاج</span>
-                                <p className="text-sm font-black text-slate-700 dark:text-slate-300">{state.dailyReports[selectedHistoryDate].report.mood}</p>
+                                <span className="text-[10px] font-black text-slate-400 block mb-1">{t('mood')}</span>
+                                <p className="text-sm font-black text-slate-700 dark:text-slate-300">{t(state.dailyReports[selectedHistoryDate].report.mood as TranslationKey)}</p>
                              </div>
                           )}
                           {state.dailyReports[selectedHistoryDate].report.sleepQuality && (
                              <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-center">
-                                <span className="text-[10px] font-black text-slate-400 block mb-1">النوم</span>
-                                <p className="text-sm font-black text-slate-700 dark:text-slate-300">{state.dailyReports[selectedHistoryDate].report.sleepQuality}</p>
+                                <span className="text-[10px] font-black text-slate-400 block mb-1">{t('sleepQuality')}</span>
+                                <p className="text-sm font-black text-slate-700 dark:text-slate-300">{t(state.dailyReports[selectedHistoryDate].report.sleepQuality as TranslationKey)}</p>
                              </div>
                           )}
                        </div>
@@ -1039,11 +1299,11 @@ const App: React.FC = () => {
                     <div className="w-16 h-16 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-4">
                        <FileText className="w-8 h-8 text-slate-300"/>
                     </div>
-                    <p className="text-slate-400 font-bold">لا توجد بيانات مسجلة لهذا اليوم</p>
+                    <p className="text-slate-400 font-bold">{t('noDataForDay')}</p>
                  </div>
               )}
 
-              <button onClick={() => setSelectedHistoryDate(null)} className="w-full mt-8 py-5 bg-slate-900 dark:bg-slate-800 text-white rounded-[1.5rem] font-black text-lg shadow-xl active:scale-95 transition-all">إغلاق</button>
+              <button onClick={() => setSelectedHistoryDate(null)} className="w-full mt-8 py-5 bg-slate-900 dark:bg-slate-800 text-white rounded-[1.5rem] font-black text-lg shadow-xl active:scale-95 transition-all">{t('close')}</button>
            </div>
         </div>
       )}
