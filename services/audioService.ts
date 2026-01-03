@@ -64,7 +64,8 @@ const fallbackSpeak = (text: string): Promise<void> => {
       const allVoices = voices.filter(v => v.lang.includes('ar'));
       console.log('Available Arabic voices:', allVoices.map(v => `${v.name} (${v.lang})`));
 
-      const arabicVoice = voices.find(v => v.lang.includes('ar-EG') && v.name.includes('Google')) ||
+      const arabicVoice = voices.find(v => v.name.includes('Hoda') || v.name.includes('Laila') || v.name.includes('Salma')) ||
+                          voices.find(v => v.lang.includes('ar-EG') && v.name.includes('Google')) ||
                           voices.find(v => v.lang.includes('ar-EG')) ||
                           voices.find(v => v.lang.includes('ar-SA') && v.name.includes('Google')) ||
                           voices.find(v => v.lang.includes('ar') && v.name.includes('Google')) ||
@@ -79,7 +80,7 @@ const fallbackSpeak = (text: string): Promise<void> => {
         utterance.lang = 'ar-EG'; // Fallback to asking for Egyptian
       }
 
-      utterance.rate = 0.85; // Slightly slower for better clarity
+      utterance.rate = 0.9; // Natural speed
       utterance.pitch = 1.0;
       
       utterance.onend = () => resolve();
@@ -115,7 +116,7 @@ const processQueue = async () => {
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Fenrir' } },
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } },
         },
       },
     });
