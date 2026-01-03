@@ -660,8 +660,11 @@ const App: React.FC = () => {
                             <div key={med.id} className={`p-4 rounded-[2rem] border-2 flex items-center gap-4 transition-all duration-300 group ${cardStyle} hover:shadow-xl hover:-translate-y-1`}>
                                <div className="flex-1 text-right">
                                  <h4 className={`font-black text-xl dark:text-white ${isTaken ? 'line-through' : ''}`}>{med.name}</h4>
-                                {med.category && <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 mt-1">{t(`cat_${med.category.replace('-', '_')}` as TranslationKey)}</p>}
-                                {med.stock !== undefined && (
+                                 <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 mt-1">
+                                   {med.dosage}
+                                   {med.category && <span className="mx-1">• {t(`cat_${med.category.replace('-', '_')}` as TranslationKey)}</span>}
+                                 </p>
+                                 {med.stock !== undefined && (
                                    <p className={`text-[10px] font-black mt-1 ${med.stock <= (med.lowStockThreshold || 5) ? 'text-red-500 animate-pulse' : 'text-emerald-600 dark:text-emerald-400'}`}>
                                      {t('stockLabel')}: {med.stock}
                                    </p>
@@ -676,7 +679,6 @@ const App: React.FC = () => {
                                    </div>
                                  ) : (
                                    <div className="flex flex-col gap-1">
-                                      <button onClick={() => { setSelectedMed(med); setActiveModal('medDetail'); }} className="p-3 text-slate-400 hover:text-blue-500 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-all"><Info className="w-5 h-5"/></button>
                                       <button onClick={() => { setEditingMed(med); setActiveModal('medEditor'); }} className="p-3 text-emerald-500 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded-lg transition-all" title={t('stock')}><Package className="w-5 h-5"/></button>
                                    </div>
                                  )}
