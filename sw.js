@@ -22,8 +22,8 @@ messaging.onBackgroundMessage((payload) => {
   
   const options = {
     body: payload.notification?.body || "حان موعد أدويتك الآن.",
-    icon: 'https://cdn-icons-png.flaticon.com/512/883/883356.png',
-    badge: 'https://cdn-icons-png.flaticon.com/512/883/883356.png',
+    icon: '/icon.png',
+    badge: '/icon.png',
     tag: isTip ? 'health-tip' : 'medication-reminder',
     renotify: !isTip,
     silent: isTip,
