@@ -1001,9 +1001,9 @@ const App: React.FC = () => {
                    <input type="number" value={editingMed.stock !== undefined ? editingMed.stock : ''} onChange={e => setEditingMed({...editingMed, stock: e.target.value ? parseInt(e.target.value) : undefined})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
                  </div>
                  <div className="space-y-2">
-                   <label className="text-[10px] font-black text-slate-400 pr-1">{t('lowStockThreshold')}</label>
-                   <input type="number" value={editingMed.lowStockThreshold !== undefined ? editingMed.lowStockThreshold : 5} onChange={e => setEditingMed({...editingMed, lowStockThreshold: e.target.value ? parseInt(e.target.value) : 5})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
-                 </div>
+                    <label className="text-[10px] font-black text-slate-400 pr-1">{t('lowStockThreshold')}</label>
+                    <input type="number" placeholder="5" value={editingMed.lowStockThreshold !== undefined ? editingMed.lowStockThreshold : ''} onChange={e => setEditingMed({...editingMed, lowStockThreshold: e.target.value === '' ? undefined : parseInt(e.target.value)})} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-right font-black text-base outline-none border-2 border-transparent focus:border-blue-500 shadow-inner"/>
+                  </div>
               </div>
 
               <div className="space-y-2">
